@@ -40,3 +40,13 @@ Prerequisites on the Windows machine:
 - MetaTrader 4 with `metaeditor.exe`
 - MetaTrader 5 with `metaeditor64.exe`
 - authenticated GitHub CLI (`gh auth login`)
+
+If MetaEditor is installed in a non-default location, pass explicit paths:
+
+```powershell
+powershell -ExecutionPolicy Bypass -File scripts/release/local_release.ps1 `
+  -Bump patch `
+  -Publish `
+  -MT4MetaEditorPath "C:\Path\To\metaeditor.exe" `
+  -MT5MetaEditorPath "C:\Path\To\metaeditor64.exe"
+```

@@ -1,6 +1,8 @@
 param(
   [ValidateSet("patch", "minor", "major")]
   [string]$Bump = "patch",
+  [string]$MT4MetaEditorPath = "",
+  [string]$MT5MetaEditorPath = "",
   [switch]$Publish
 )
 
@@ -53,11 +55,32 @@ function Update-PyprojectVersion {
 }
 
 function Resolve-MetaEditorPath {
-  param([string[]]$Candidates, [string]$Label)
+  param([string[]]$Candidates, [string]$Label, [string]$OverridePath)
+
+  if ($OverridePath -and (Test-Path $OverridePath)) {
+    return $OverridePath
+  }
 
   foreach ($candidatePath in $Candidates) {
     if (Test-Path $candidatePath) {
       return $candidatePath
+    }
+  }
+
+  $searchRoots = @(
+    "C:\Program Files",
+    "C:\Program Files (x86)",
+    "$env:APPDATA\MetaQuotes",
+    "$env:LOCALAPPDATA\Programs"
+  ) | Where-Object { Test-Path $_ }
+
+  $searchPattern = if ($Label -eq "MT4") { "metaeditor.exe" } else { "metaeditor64.exe" }
+
+  foreach ($searchRoot in $searchRoots) {
+    $discoveredPath = Get-ChildItem -Path $searchRoot -Recurse -Filter $searchPattern -ErrorAction SilentlyContinue |
+      Select-Object -First 1 -ExpandProperty FullName
+    if ($discoveredPath) {
+      return $discoveredPath
     }
   }
 
@@ -81,12 +104,12 @@ Update-PyprojectVersion -VersionValue $nextVersion
 $mt4EditorPath = Resolve-MetaEditorPath -Candidates @(
   "C:\Program Files\MetaTrader 4\metaeditor.exe",
   "C:\Program Files (x86)\MetaTrader 4\metaeditor.exe"
-) -Label "MT4"
+) -Label "MT4" -OverridePath $MT4MetaEditorPath
 
 $mt5EditorPath = Resolve-MetaEditorPath -Candidates @(
   "C:\Program Files\MetaTrader 5\metaeditor64.exe",
   "C:\Program Files (x86)\MetaTrader 5\metaeditor64.exe"
-) -Label "MT5"
+) -Label "MT5" -OverridePath $MT5MetaEditorPath
 
 New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
 
