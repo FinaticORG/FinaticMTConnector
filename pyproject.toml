@@ -86,3 +86,11 @@ sequence = [
   { cmd = "python -m ruff format src tests --check" },
   { cmd = "python -m pytest tests -m \"not integration\"" },
 ]
+
+[tool.poe.tasks.release-local]
+help = "Run local Windows binary release preparation (no push)"
+cmd = "powershell -ExecutionPolicy Bypass -File scripts/release/local_release.ps1 -Bump patch"
+
+[tool.poe.tasks.release-local-publish]
+help = "Run local Windows binary release preparation and publish"
+cmd = "powershell -ExecutionPolicy Bypass -File scripts/release/local_release.ps1 -Bump patch -Publish"

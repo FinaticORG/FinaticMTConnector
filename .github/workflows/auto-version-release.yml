@@ -1,9 +1,17 @@
 name: Auto Version and Tag
 
 on:
-  push:
-    branches:
-      - develop
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Semantic version segment to increment"
+        required: true
+        default: patch
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
 
 permissions:
   contents: write
@@ -15,7 +23,7 @@ concurrency:
 jobs:
   bump-version-and-tag:
     name: Bump patch version and create tag
-    if: github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip release]')
+    if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -38,8 +46,14 @@ jobs:
           fi
           latest_version="${latest_tag#v}"
           IFS='.' read -r major minor patch <<< "$latest_version"
-          next_patch=$((patch + 1))
-          next_version="${major}.${minor}.${next_patch}"
+          bump_type="${{ github.event.inputs.bump }}"
+          if [[ "$bump_type" == "major" ]]; then
+            next_version="$((major + 1)).0.0"
+          elif [[ "$bump_type" == "minor" ]]; then
+            next_version="${major}.$((minor + 1)).0"
+          else
+            next_version="${major}.${minor}.$((patch + 1))"
+          fi
           echo "latest_tag=$latest_tag" >> "$GITHUB_OUTPUT"
           echo "next_version=$next_version" >> "$GITHUB_OUTPUT"
           echo "next_tag=v$next_version" >> "$GITHUB_OUTPUT"
