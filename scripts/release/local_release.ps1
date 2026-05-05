@@ -51,7 +51,12 @@ function Update-PyprojectVersion {
     throw "Unable to update project version in pyproject.toml."
   }
 
-  Set-Content -Path $pyprojectPath -Value $updatedContent -Encoding UTF8
+  $utf8WithoutBomEncoding = New-Object System.Text.UTF8Encoding($false)
+  [System.IO.File]::WriteAllText(
+    $pyprojectPath,
+    ($updatedContent -join "`n") + "`n",
+    $utf8WithoutBomEncoding
+  )
 }
 
 function Resolve-MetaEditorPath {
