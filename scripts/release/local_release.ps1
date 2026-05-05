@@ -139,6 +139,37 @@ function Get-TerminalRootFromMetaEditor {
   return Split-Path -Parent $MetaEditorPath
 }
 
+function Resolve-ExpertsDirectoryPath {
+  param(
+    [string]$PlatformFolderName,
+    [string]$TerminalRootPath
+  )
+
+  $candidatePaths = @(
+    (Join-Path $TerminalRootPath "$PlatformFolderName\Experts"),
+    "$env:APPDATA\MetaQuotes\Terminal",
+    "$env:LOCALAPPDATA\MetaQuotes\Terminal"
+  )
+
+  $directExpertsPath = $candidatePaths[0]
+  if (Test-Path $directExpertsPath) {
+    return $directExpertsPath
+  }
+
+  $terminalDataRoots = $candidatePaths | Select-Object -Skip 1 | Where-Object { Test-Path $_ }
+  foreach ($terminalDataRoot in $terminalDataRoots) {
+    $resolvedExpertsPath = Get-ChildItem -Path $terminalDataRoot -Directory -ErrorAction SilentlyContinue |
+      ForEach-Object { Join-Path $_.FullName "$PlatformFolderName\Experts" } |
+      Where-Object { Test-Path $_ } |
+      Select-Object -First 1
+    if ($resolvedExpertsPath) {
+      return $resolvedExpertsPath
+    }
+  }
+
+  throw "$PlatformFolderName Experts folder not found. Checked terminal root and MetaQuotes data folders."
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $repoRoot
 
@@ -171,11 +202,8 @@ $mt5BuildLogPath = Join-Path $env:TEMP "mt5-build.log"
 $mt4TerminalRootPath = Get-TerminalRootFromMetaEditor -MetaEditorPath $mt4EditorPath
 $mt5TerminalRootPath = Get-TerminalRootFromMetaEditor -MetaEditorPath $mt5EditorPath
 
-$mt4ExpertsPath = Join-Path $mt4TerminalRootPath "MQL4\Experts"
-$mt5ExpertsPath = Join-Path $mt5TerminalRootPath "MQL5\Experts"
-
-if (-not (Test-Path $mt4ExpertsPath)) { throw "MT4 Experts folder not found: $mt4ExpertsPath" }
-if (-not (Test-Path $mt5ExpertsPath)) { throw "MT5 Experts folder not found: $mt5ExpertsPath" }
+$mt4ExpertsPath = Resolve-ExpertsDirectoryPath -PlatformFolderName "MQL4" -TerminalRootPath $mt4TerminalRootPath
+$mt5ExpertsPath = Resolve-ExpertsDirectoryPath -PlatformFolderName "MQL5" -TerminalRootPath $mt5TerminalRootPath
 
 $mt4CompilePath = Join-Path $mt4ExpertsPath "FinaticMT4ConnectorEA.mq4"
 $mt5CompilePath = Join-Path $mt5ExpertsPath "FinaticMT5ConnectorEA.mq5"
