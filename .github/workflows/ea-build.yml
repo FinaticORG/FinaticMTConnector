@@ -20,13 +20,11 @@ concurrency:
 
 jobs:
   build-and-release:
-    name: Compile EAs and publish release assets
+    name: Publish EA source artifacts
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    runs-on: windows-latest
-    timeout-minutes: 45
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
-      MT4_INSTALLER_URL: https://download.mql5.com/cdn/web/metaquotes.software.corp/mt4/mt4setup.exe
-      MT5_INSTALLER_URL: https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe
       MT4_SOURCE_PATH: src/finatic_mt_connector/ea_reference/mt4/FinaticMT4ConnectorEA.mq4
       MT5_SOURCE_PATH: src/finatic_mt_connector/ea_reference/mt5/FinaticMT5ConnectorEA.mq5
       DIST_DIRECTORY: dist/ea
@@ -53,152 +51,18 @@ jobs:
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           git checkout "$release_tag"
 
-      - name: Install MetaTrader toolchains
-        shell: pwsh
+      - name: Collect EA source artifacts
+        shell: bash
         run: |
-          New-Item -ItemType Directory -Path "$env:RUNNER_TEMP\mt-toolchains" -Force | Out-Null
-
-          $mt4InstallerPath = "$env:RUNNER_TEMP\mt-toolchains\mt4setup.exe"
-          $mt5InstallerPath = "$env:RUNNER_TEMP\mt-toolchains\mt5setup.exe"
-
-          Invoke-WebRequest -Uri "$env:MT4_INSTALLER_URL" -OutFile $mt4InstallerPath
-          Invoke-WebRequest -Uri "$env:MT5_INSTALLER_URL" -OutFile $mt5InstallerPath
-
-          function Invoke-InstallerWithTimeout([string]$installerPath, [string]$label) {
-            $installerArguments = "/auto", "/silent"
-            $installerProcess = Start-Process -FilePath $installerPath -ArgumentList $installerArguments -PassThru
-            $processCompleted = $installerProcess.WaitForExit(300000)
-            if (-not $processCompleted) {
-              Stop-Process -Id $installerProcess.Id -Force -ErrorAction SilentlyContinue
-              throw "$label installer timed out after 5 minutes."
-            }
-            if ($installerProcess.ExitCode -ne 0) {
-              Write-Host "::warning::$label installer exited with code $($installerProcess.ExitCode). Continuing to executable discovery."
-            }
-          }
-
-          Invoke-InstallerWithTimeout -installerPath $mt4InstallerPath -label "MT4"
-          Invoke-InstallerWithTimeout -installerPath $mt5InstallerPath -label "MT5"
-
-      - name: Discover MetaEditor executables
-        id: discover-metaeditors
-        shell: pwsh
-        run: |
-          $mt4Candidates = @(
-            "C:\Program Files\MetaTrader 4\metaeditor.exe",
-            "C:\Program Files (x86)\MetaTrader 4\metaeditor.exe"
-          )
-          $mt5Candidates = @(
-            "C:\Program Files\MetaTrader 5\metaeditor64.exe",
-            "C:\Program Files (x86)\MetaTrader 5\metaeditor64.exe"
-          )
-
-          $mt4MetaEditorPath = $mt4Candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-          $mt5MetaEditorPath = $mt5Candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
-
-          if (-not $mt4MetaEditorPath) {
-            $mt4MetaEditorPath = (Get-ChildItem "C:\" -Recurse -Filter metaeditor.exe -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match "MetaTrader 4" } |
-              Select-Object -First 1 -ExpandProperty FullName)
-          }
-          if (-not $mt5MetaEditorPath) {
-            $mt5MetaEditorPath = (Get-ChildItem "C:\" -Recurse -Filter metaeditor64.exe -ErrorAction SilentlyContinue |
-              Where-Object { $_.FullName -match "MetaTrader 5" } |
-              Select-Object -First 1 -ExpandProperty FullName)
-          }
-
-          if (-not $mt4MetaEditorPath) {
-            throw "Unable to locate MetaEditor executable for MT4."
-          }
-          if (-not $mt5MetaEditorPath) {
-            throw "Unable to locate MetaEditor executable for MT5."
-          }
-
-          "mt4_metaeditor_path=$mt4MetaEditorPath" >> $env:GITHUB_OUTPUT
-          "mt5_metaeditor_path=$mt5MetaEditorPath" >> $env:GITHUB_OUTPUT
-
-      - name: Compile MT4 EA
-        shell: pwsh
-        run: |
-          $distDirectory = "$env:GITHUB_WORKSPACE\$env:DIST_DIRECTORY"
-          New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
-
-          $mt4SourcePath = "$env:GITHUB_WORKSPACE\$env:MT4_SOURCE_PATH"
-          $mt4BuildLogPath = "$env:RUNNER_TEMP\mt4-build.log"
-
-          & "${{ steps.discover-metaeditors.outputs.mt4_metaeditor_path }}" /compile:"$mt4SourcePath" /log:"$mt4BuildLogPath"
-          $metaEditorExitCode = $LASTEXITCODE
-
-          $mt4CompiledPath = [System.IO.Path]::ChangeExtension($mt4SourcePath, ".ex4")
-          if (-not (Test-Path $mt4CompiledPath)) {
-            $mt4CompiledFallback = Get-ChildItem "$env:GITHUB_WORKSPACE" -Recurse -Filter "FinaticMT4ConnectorEA.ex4" -ErrorAction SilentlyContinue |
-              Select-Object -First 1 -ExpandProperty FullName
-            if ($mt4CompiledFallback) {
-              $mt4CompiledPath = $mt4CompiledFallback
-            }
-          }
-
-          if (-not (Test-Path $mt4CompiledPath)) {
-            if (Test-Path $mt4BuildLogPath) {
-              Get-Content $mt4BuildLogPath
-            }
-            Write-Host "::warning::MT4 compilation did not produce an .ex4 artifact. Exit code: $metaEditorExitCode"
-            Copy-Item $mt4SourcePath "$distDirectory\FinaticMT4ConnectorEA.mq4" -Force
-          } else {
-            Copy-Item $mt4CompiledPath "$distDirectory\FinaticMT4ConnectorEA.ex4" -Force
-          }
-
-          if (Test-Path $mt4BuildLogPath) {
-            Copy-Item $mt4BuildLogPath "$distDirectory\FinaticMT4ConnectorEA.build.log" -Force
-          }
-
-      - name: Compile MT5 EA
-        shell: pwsh
-        run: |
-          $distDirectory = "$env:GITHUB_WORKSPACE\$env:DIST_DIRECTORY"
-          New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
-
-          $mt5SourcePath = "$env:GITHUB_WORKSPACE\$env:MT5_SOURCE_PATH"
-          $mt5BuildLogPath = "$env:RUNNER_TEMP\mt5-build.log"
-
-          & "${{ steps.discover-metaeditors.outputs.mt5_metaeditor_path }}" /compile:"$mt5SourcePath" /log:"$mt5BuildLogPath"
-          $metaEditorExitCode = $LASTEXITCODE
-
-          $mt5CompiledPath = [System.IO.Path]::ChangeExtension($mt5SourcePath, ".ex5")
-          if (-not (Test-Path $mt5CompiledPath)) {
-            $mt5CompiledFallback = Get-ChildItem "$env:GITHUB_WORKSPACE" -Recurse -Filter "FinaticMT5ConnectorEA.ex5" -ErrorAction SilentlyContinue |
-              Select-Object -First 1 -ExpandProperty FullName
-            if ($mt5CompiledFallback) {
-              $mt5CompiledPath = $mt5CompiledFallback
-            }
-          }
-
-          if (-not (Test-Path $mt5CompiledPath)) {
-            if (Test-Path $mt5BuildLogPath) {
-              Get-Content $mt5BuildLogPath
-            }
-            Write-Host "::warning::MT5 compilation did not produce an .ex5 artifact. Exit code: $metaEditorExitCode"
-            Copy-Item $mt5SourcePath "$distDirectory\FinaticMT5ConnectorEA.mq5" -Force
-          } else {
-            Copy-Item $mt5CompiledPath "$distDirectory\FinaticMT5ConnectorEA.ex5" -Force
-          }
-
-          if (Test-Path $mt5BuildLogPath) {
-            Copy-Item $mt5BuildLogPath "$distDirectory\FinaticMT5ConnectorEA.build.log" -Force
-          }
+          mkdir -p "$DIST_DIRECTORY"
+          cp "$MT4_SOURCE_PATH" "$DIST_DIRECTORY/FinaticMT4ConnectorEA.mq4"
+          cp "$MT5_SOURCE_PATH" "$DIST_DIRECTORY/FinaticMT5ConnectorEA.mq5"
 
       - name: Generate SHA-256 checksums
-        shell: pwsh
+        shell: bash
         run: |
-          $distDirectory = "$env:GITHUB_WORKSPACE\$env:DIST_DIRECTORY"
-          $checksumOutputPath = "$distDirectory\checksums.sha256"
-
-          Get-ChildItem $distDirectory -File |
-            Where-Object { $_.Name -notmatch "checksums\.sha256" } |
-            ForEach-Object {
-              $fileHash = Get-FileHash $_.FullName -Algorithm SHA256
-              "$($fileHash.Hash.ToLower())  $($_.Name)"
-            } | Out-File -FilePath $checksumOutputPath -Encoding utf8
+          cd "$DIST_DIRECTORY"
+          sha256sum FinaticMT4ConnectorEA.mq4 FinaticMT5ConnectorEA.mq5 > checksums.sha256
 
       - name: Build release notes
         shell: pwsh
@@ -210,8 +74,8 @@ jobs:
           ## Finatic MT Connector $tagName
 
           ### Included artifacts
-          - FinaticMT4ConnectorEA.ex4 or FinaticMT4ConnectorEA.mq4 (fallback)
-          - FinaticMT5ConnectorEA.ex5 or FinaticMT5ConnectorEA.mq5 (fallback)
+          - FinaticMT4ConnectorEA.mq4
+          - FinaticMT5ConnectorEA.mq5
           - checksums.sha256
 
           ### Verification
