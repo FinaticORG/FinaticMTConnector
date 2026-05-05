@@ -1,0 +1,86 @@
+name: Auto Version and Tag
+
+on:
+  push:
+    branches:
+      - develop
+
+permissions:
+  contents: write
+
+concurrency:
+  group: finatic-mt-connector-auto-release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  bump-version-and-tag:
+    name: Bump patch version and create tag
+    if: github.actor != 'github-actions[bot]' && !contains(github.event.head_commit.message, '[skip release]')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Calculate next semantic version
+        id: next-version
+        shell: bash
+        run: |
+          latest_tag="$(git tag -l 'v*' --sort=-v:refname | head -n 1)"
+          if [[ -z "$latest_tag" ]]; then
+            latest_tag="v0.1.0"
+          fi
+          latest_version="${latest_tag#v}"
+          IFS='.' read -r major minor patch <<< "$latest_version"
+          next_patch=$((patch + 1))
+          next_version="${major}.${minor}.${next_patch}"
+          echo "latest_tag=$latest_tag" >> "$GITHUB_OUTPUT"
+          echo "next_version=$next_version" >> "$GITHUB_OUTPUT"
+          echo "next_tag=v$next_version" >> "$GITHUB_OUTPUT"
+
+      - name: Update project version
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+
+          pyproject_path = Path("pyproject.toml")
+          pyproject_text = pyproject_path.read_text(encoding="utf-8")
+          previous_line_prefix = 'version = "'
+          next_version_value = "${{ steps.next-version.outputs.next_version }}"
+          updated_lines: list[str] = []
+          version_line_updated = False
+          for current_line in pyproject_text.splitlines():
+              if current_line.startswith(previous_line_prefix) and not version_line_updated:
+                  updated_lines.append(f'version = "{next_version_value}"')
+                  version_line_updated = True
+                  continue
+              updated_lines.append(current_line)
+          if not version_line_updated:
+              raise RuntimeError("Unable to locate project version in pyproject.toml")
+          pyproject_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+          PY
+
+      - name: Configure git author
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Commit version bump
+        shell: bash
+        run: |
+          git add pyproject.toml
+          git commit -m "chore(release): ${{ steps.next-version.outputs.next_tag }} [skip ci] [skip release]"
+
+      - name: Create and push release tag
+        shell: bash
+        run: |
+          git tag "${{ steps.next-version.outputs.next_tag }}"
+          git push origin HEAD:develop
+          git push origin "${{ steps.next-version.outputs.next_tag }}"

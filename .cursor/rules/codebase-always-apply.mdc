@@ -1,0 +1,13 @@
+These are rules you must abide by when working in the FinaticMTConnector codebase.
+
+When you make changes to connector protocol contracts, signing, replay, state
+transitions, or ingestion assumptions, you MUST update the following files:
+
+- `docs/ea-charter.md`
+- `docs/oss-bill-of-materials.md`
+- `docs/runbooks/stale-connector.md`
+- `docs/runbooks/signature-failures.md`
+- `docs/runbooks/replay-saturation.md`
+- `docs/runbooks/secret-rotation.md`
+
+Use structured JSON logging patterns and never log connector secrets.
