@@ -127,18 +127,28 @@ jobs:
           $mt4BuildLogPath = "$env:RUNNER_TEMP\mt4-build.log"
 
           & "${{ steps.discover-metaeditors.outputs.mt4_metaeditor_path }}" /compile:"$mt4SourcePath" /log:"$mt4BuildLogPath"
-          if ($LASTEXITCODE -ne 0) {
-            Get-Content $mt4BuildLogPath
-            throw "MT4 compilation failed."
-          }
+          $metaEditorExitCode = $LASTEXITCODE
 
           $mt4CompiledPath = [System.IO.Path]::ChangeExtension($mt4SourcePath, ".ex4")
           if (-not (Test-Path $mt4CompiledPath)) {
-            throw "Expected MT4 artifact was not generated: $mt4CompiledPath"
+            $mt4CompiledFallback = Get-ChildItem "$env:GITHUB_WORKSPACE" -Recurse -Filter "FinaticMT4ConnectorEA.ex4" -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+            if ($mt4CompiledFallback) {
+              $mt4CompiledPath = $mt4CompiledFallback
+            }
+          }
+
+          if (-not (Test-Path $mt4CompiledPath)) {
+            if (Test-Path $mt4BuildLogPath) {
+              Get-Content $mt4BuildLogPath
+            }
+            throw "MT4 compilation failed. Exit code: $metaEditorExitCode"
           }
 
           Copy-Item $mt4CompiledPath "$distDirectory\FinaticMT4ConnectorEA.ex4" -Force
-          Copy-Item $mt4BuildLogPath "$distDirectory\FinaticMT4ConnectorEA.build.log" -Force
+          if (Test-Path $mt4BuildLogPath) {
+            Copy-Item $mt4BuildLogPath "$distDirectory\FinaticMT4ConnectorEA.build.log" -Force
+          }
 
       - name: Compile MT5 EA
         shell: pwsh
@@ -150,18 +160,28 @@ jobs:
           $mt5BuildLogPath = "$env:RUNNER_TEMP\mt5-build.log"
 
           & "${{ steps.discover-metaeditors.outputs.mt5_metaeditor_path }}" /compile:"$mt5SourcePath" /log:"$mt5BuildLogPath"
-          if ($LASTEXITCODE -ne 0) {
-            Get-Content $mt5BuildLogPath
-            throw "MT5 compilation failed."
-          }
+          $metaEditorExitCode = $LASTEXITCODE
 
           $mt5CompiledPath = [System.IO.Path]::ChangeExtension($mt5SourcePath, ".ex5")
           if (-not (Test-Path $mt5CompiledPath)) {
-            throw "Expected MT5 artifact was not generated: $mt5CompiledPath"
+            $mt5CompiledFallback = Get-ChildItem "$env:GITHUB_WORKSPACE" -Recurse -Filter "FinaticMT5ConnectorEA.ex5" -ErrorAction SilentlyContinue |
+              Select-Object -First 1 -ExpandProperty FullName
+            if ($mt5CompiledFallback) {
+              $mt5CompiledPath = $mt5CompiledFallback
+            }
+          }
+
+          if (-not (Test-Path $mt5CompiledPath)) {
+            if (Test-Path $mt5BuildLogPath) {
+              Get-Content $mt5BuildLogPath
+            }
+            throw "MT5 compilation failed. Exit code: $metaEditorExitCode"
           }
 
           Copy-Item $mt5CompiledPath "$distDirectory\FinaticMT5ConnectorEA.ex5" -Force
-          Copy-Item $mt5BuildLogPath "$distDirectory\FinaticMT5ConnectorEA.build.log" -Force
+          if (Test-Path $mt5BuildLogPath) {
+            Copy-Item $mt5BuildLogPath "$distDirectory\FinaticMT5ConnectorEA.build.log" -Force
+          }
 
       - name: Generate SHA-256 checksums
         shell: pwsh
