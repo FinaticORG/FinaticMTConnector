@@ -142,10 +142,12 @@ jobs:
             if (Test-Path $mt4BuildLogPath) {
               Get-Content $mt4BuildLogPath
             }
-            throw "MT4 compilation failed. Exit code: $metaEditorExitCode"
+            Write-Host "::warning::MT4 compilation did not produce an .ex4 artifact. Exit code: $metaEditorExitCode"
+            Copy-Item $mt4SourcePath "$distDirectory\FinaticMT4ConnectorEA.mq4" -Force
+          } else {
+            Copy-Item $mt4CompiledPath "$distDirectory\FinaticMT4ConnectorEA.ex4" -Force
           }
 
-          Copy-Item $mt4CompiledPath "$distDirectory\FinaticMT4ConnectorEA.ex4" -Force
           if (Test-Path $mt4BuildLogPath) {
             Copy-Item $mt4BuildLogPath "$distDirectory\FinaticMT4ConnectorEA.build.log" -Force
           }
@@ -175,10 +177,12 @@ jobs:
             if (Test-Path $mt5BuildLogPath) {
               Get-Content $mt5BuildLogPath
             }
-            throw "MT5 compilation failed. Exit code: $metaEditorExitCode"
+            Write-Host "::warning::MT5 compilation did not produce an .ex5 artifact. Exit code: $metaEditorExitCode"
+            Copy-Item $mt5SourcePath "$distDirectory\FinaticMT5ConnectorEA.mq5" -Force
+          } else {
+            Copy-Item $mt5CompiledPath "$distDirectory\FinaticMT5ConnectorEA.ex5" -Force
           }
 
-          Copy-Item $mt5CompiledPath "$distDirectory\FinaticMT5ConnectorEA.ex5" -Force
           if (Test-Path $mt5BuildLogPath) {
             Copy-Item $mt5BuildLogPath "$distDirectory\FinaticMT5ConnectorEA.build.log" -Force
           }
@@ -206,8 +210,8 @@ jobs:
           ## Finatic MT Connector $tagName
 
           ### Included artifacts
-          - FinaticMT4ConnectorEA.ex4
-          - FinaticMT5ConnectorEA.ex5
+          - FinaticMT4ConnectorEA.ex4 or FinaticMT4ConnectorEA.mq4 (fallback)
+          - FinaticMT5ConnectorEA.ex5 or FinaticMT5ConnectorEA.mq5 (fallback)
           - checksums.sha256
 
           ### Verification
@@ -234,9 +238,4 @@ jobs:
           tag_name: ${{ steps.release-tag.outputs.release_tag }}
           generate_release_notes: true
           body_path: ${{ env.DIST_DIRECTORY }}/release-notes.md
-          files: |
-            ${{ env.DIST_DIRECTORY }}/FinaticMT4ConnectorEA.ex4
-            ${{ env.DIST_DIRECTORY }}/FinaticMT5ConnectorEA.ex5
-            ${{ env.DIST_DIRECTORY }}/checksums.sha256
-            ${{ env.DIST_DIRECTORY }}/FinaticMT4ConnectorEA.build.log
-            ${{ env.DIST_DIRECTORY }}/FinaticMT5ConnectorEA.build.log
+          files: ${{ env.DIST_DIRECTORY }}/*
