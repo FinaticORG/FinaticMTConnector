@@ -87,6 +87,48 @@ function Resolve-MetaEditorPath {
   throw "Unable to locate MetaEditor for $Label. Check local MT installation."
 }
 
+function Resolve-CompiledBinaryPath {
+  param(
+    [string]$ExpectedPath,
+    [string]$BinaryFilename,
+    [string]$PlatformFolderName
+  )
+
+  if (Test-Path $ExpectedPath) {
+    return $ExpectedPath
+  }
+
+  $searchRoots = @(
+    (Split-Path -Parent $ExpectedPath),
+    "$env:APPDATA\MetaQuotes\Terminal",
+    "$env:LOCALAPPDATA\MetaQuotes\Terminal",
+    "C:\Program Files\MetaTrader 4",
+    "C:\Program Files (x86)\MetaTrader 4",
+    "C:\Program Files\MetaTrader 5",
+    "C:\Program Files (x86)\MetaTrader 5"
+  ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
+
+  $candidateFiles = @()
+  foreach ($searchRoot in $searchRoots) {
+    $candidateFiles += Get-ChildItem -Path $searchRoot -Recurse -Filter $BinaryFilename -ErrorAction SilentlyContinue
+  }
+
+  if (-not $candidateFiles) {
+    throw "Expected binary missing: $ExpectedPath and no fallback match for $BinaryFilename"
+  }
+
+  $preferredFile = $candidateFiles |
+    Where-Object { $_.FullName -match "$PlatformFolderName\\Experts" } |
+    Sort-Object LastWriteTimeUtc -Descending |
+    Select-Object -First 1
+
+  if ($preferredFile) {
+    return $preferredFile.FullName
+  }
+
+  return ($candidateFiles | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).FullName
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $repoRoot
 
@@ -95,8 +137,6 @@ $releaseTag = "v$nextVersion"
 $distDirectory = Join-Path $repoRoot "dist\ea"
 
 Write-Host "Preparing release $releaseTag"
-
-python -m pip --version | Out-Null
 uv run poe ci-fast
 
 Update-PyprojectVersion -VersionValue $nextVersion
@@ -132,8 +172,8 @@ if ($LASTEXITCODE -ne 0) {
 
 $mt4BinaryPath = [System.IO.Path]::ChangeExtension($mt4SourcePath, ".ex4")
 $mt5BinaryPath = [System.IO.Path]::ChangeExtension($mt5SourcePath, ".ex5")
-if (-not (Test-Path $mt4BinaryPath)) { throw "Expected MT4 binary missing: $mt4BinaryPath" }
-if (-not (Test-Path $mt5BinaryPath)) { throw "Expected MT5 binary missing: $mt5BinaryPath" }
+$mt4BinaryPath = Resolve-CompiledBinaryPath -ExpectedPath $mt4BinaryPath -BinaryFilename "FinaticMT4ConnectorEA.ex4" -PlatformFolderName "MQL4"
+$mt5BinaryPath = Resolve-CompiledBinaryPath -ExpectedPath $mt5BinaryPath -BinaryFilename "FinaticMT5ConnectorEA.ex5" -PlatformFolderName "MQL5"
 
 Copy-Item $mt4BinaryPath (Join-Path $distDirectory "FinaticMT4ConnectorEA.ex4") -Force
 Copy-Item $mt5BinaryPath (Join-Path $distDirectory "FinaticMT5ConnectorEA.ex5") -Force
