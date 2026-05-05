@@ -4,6 +4,11 @@ on:
   push:
     tags:
       - "v*"
+  workflow_run:
+    workflows:
+      - Auto Version and Tag
+    types:
+      - completed
   workflow_dispatch:
 
 permissions:
@@ -16,6 +21,7 @@ concurrency:
 jobs:
   build-and-release:
     name: Compile EAs and publish release assets
+    if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: windows-latest
     env:
       MT4_INSTALLER_URL: https://download.mql5.com/cdn/web/metaquotes.software.corp/mt4/mt4setup.exe
@@ -28,6 +34,23 @@ jobs:
         uses: actions/checkout@v4
         with:
           fetch-depth: 0
+
+      - name: Resolve release tag
+        id: release-tag
+        shell: bash
+        run: |
+          if [[ "${{ github.event_name }}" == "push" ]]; then
+            release_tag="${{ github.ref_name }}"
+          else
+            git fetch --tags
+            release_tag="$(git tag -l 'v*' --sort=-v:refname | head -n 1)"
+          fi
+          if [[ -z "$release_tag" ]]; then
+            echo "Unable to resolve release tag."
+            exit 1
+          fi
+          echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
+          git checkout "$release_tag"
 
       - name: Install MetaTrader toolchains
         shell: pwsh
@@ -143,7 +166,7 @@ jobs:
         shell: pwsh
         run: |
           $releaseNotesPath = "$env:GITHUB_WORKSPACE\$env:DIST_DIRECTORY\release-notes.md"
-          $tagName = "${{ github.ref_name }}"
+          $tagName = "${{ steps.release-tag.outputs.release_tag }}"
           $changelogItems = git log --oneline -n 15
           @"
           ## Finatic MT Connector $tagName
@@ -167,13 +190,14 @@ jobs:
       - name: Upload build artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: finatic-ea-artifacts-${{ github.ref_name }}
+          name: finatic-ea-artifacts-${{ steps.release-tag.outputs.release_tag }}
           path: ${{ env.DIST_DIRECTORY }}
 
       - name: Publish GitHub release
-        if: startsWith(github.ref, 'refs/tags/')
+        if: steps.release-tag.outputs.release_tag != ''
         uses: softprops/action-gh-release@v2
         with:
+          tag_name: ${{ steps.release-tag.outputs.release_tag }}
           generate_release_notes: true
           body_path: ${{ env.DIST_DIRECTORY }}/release-notes.md
           files: |
