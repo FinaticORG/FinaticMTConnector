@@ -96,7 +96,8 @@ function Resolve-CompiledBinaryPath {
   param(
     [string]$ExpectedPath,
     [string]$BinaryFilename,
-    [string]$PlatformFolderName
+    [string]$PlatformFolderName,
+    [datetime]$CompileStartedAtUtc
   )
 
   if (Test-Path $ExpectedPath) {
@@ -116,6 +117,21 @@ function Resolve-CompiledBinaryPath {
   $candidateFiles = @()
   foreach ($searchRoot in $searchRoots) {
     $candidateFiles += Get-ChildItem -Path $searchRoot -Recurse -Filter $BinaryFilename -ErrorAction SilentlyContinue
+  }
+
+  $freshCandidateFiles = $candidateFiles | Where-Object {
+    $_.LastWriteTimeUtc -ge $CompileStartedAtUtc.AddMinutes(-1)
+  }
+
+  if ($freshCandidateFiles) {
+    $preferredFreshFile = $freshCandidateFiles |
+      Where-Object { $_.FullName -match "$PlatformFolderName\\Experts" } |
+      Sort-Object LastWriteTimeUtc -Descending |
+      Select-Object -First 1
+    if ($preferredFreshFile) {
+      return $preferredFreshFile.FullName
+    }
+    return ($freshCandidateFiles | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).FullName
   }
 
   if (-not $candidateFiles) {
@@ -211,12 +227,14 @@ $mt5CompilePath = Join-Path $mt5ExpertsPath "FinaticMT5ConnectorEA.mq5"
 Copy-Item $mt4SourcePath $mt4CompilePath -Force
 Copy-Item $mt5SourcePath $mt5CompilePath -Force
 
+$mt4CompileStartedAtUtc = [datetime]::UtcNow
 & $mt4EditorPath /compile:"$mt4CompilePath" /log:"$mt4BuildLogPath"
 if ($LASTEXITCODE -ne 0) {
   if (Test-Path $mt4BuildLogPath) { Get-Content $mt4BuildLogPath }
   throw "MT4 compilation failed."
 }
 
+$mt5CompileStartedAtUtc = [datetime]::UtcNow
 & $mt5EditorPath /compile:"$mt5CompilePath" /log:"$mt5BuildLogPath"
 if ($LASTEXITCODE -ne 0) {
   if (Test-Path $mt5BuildLogPath) { Get-Content $mt5BuildLogPath }
@@ -225,8 +243,26 @@ if ($LASTEXITCODE -ne 0) {
 
 $mt4BinaryPath = [System.IO.Path]::ChangeExtension($mt4CompilePath, ".ex4")
 $mt5BinaryPath = [System.IO.Path]::ChangeExtension($mt5CompilePath, ".ex5")
-$mt4BinaryPath = Resolve-CompiledBinaryPath -ExpectedPath $mt4BinaryPath -BinaryFilename "FinaticMT4ConnectorEA.ex4" -PlatformFolderName "MQL4"
-$mt5BinaryPath = Resolve-CompiledBinaryPath -ExpectedPath $mt5BinaryPath -BinaryFilename "FinaticMT5ConnectorEA.ex5" -PlatformFolderName "MQL5"
+try {
+  $mt4BinaryPath = Resolve-CompiledBinaryPath -ExpectedPath $mt4BinaryPath -BinaryFilename "FinaticMT4ConnectorEA.ex4" -PlatformFolderName "MQL4" -CompileStartedAtUtc $mt4CompileStartedAtUtc
+} catch {
+  if (Test-Path $mt4BuildLogPath) {
+    Write-Host "---- MT4 build log ----"
+    Get-Content $mt4BuildLogPath
+    Write-Host "-----------------------"
+  }
+  throw
+}
+try {
+  $mt5BinaryPath = Resolve-CompiledBinaryPath -ExpectedPath $mt5BinaryPath -BinaryFilename "FinaticMT5ConnectorEA.ex5" -PlatformFolderName "MQL5" -CompileStartedAtUtc $mt5CompileStartedAtUtc
+} catch {
+  if (Test-Path $mt5BuildLogPath) {
+    Write-Host "---- MT5 build log ----"
+    Get-Content $mt5BuildLogPath
+    Write-Host "-----------------------"
+  }
+  throw
+}
 
 Copy-Item $mt4BinaryPath (Join-Path $distDirectory "FinaticMT4ConnectorEA.ex4") -Force
 Copy-Item $mt5BinaryPath (Join-Path $distDirectory "FinaticMT5ConnectorEA.ex5") -Force
