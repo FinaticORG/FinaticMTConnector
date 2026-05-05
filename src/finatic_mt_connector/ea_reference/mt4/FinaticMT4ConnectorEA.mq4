@@ -2,33 +2,31 @@
 #property version   "0.1.0"
 #property description "Finatic MT4 Connector Reference EA"
 
-extern string FinaticPlatform = "mt4";
-extern string FinaticConnectorId = "";
-extern string FinaticConnectorSecret = "";
-extern string FinaticIngestUrl = "";
-extern int FinaticSigningSchemeVersion = 1;
-extern int FinaticTimestampSkewSeconds = 300;
-extern bool FinaticSnapshotRequired = true;
-extern int FinaticHeartbeatSeconds = 15;
+input string FinaticPlatform = "mt4";
+input string FinaticConnectorId = "";
+input string FinaticConnectorSecret = "";
+input string FinaticIngestUrl = "";
+input int FinaticSigningSchemeVersion = 1;
+input int FinaticTimestampSkewSeconds = 300;
+input bool FinaticSnapshotRequired = true;
+input int FinaticHeartbeatSeconds = 15;
 
-int init()
+int OnInit()
   {
    EventSetTimer(FinaticHeartbeatSeconds);
    Print("Finatic MT4 Connector initialized. Platform=", FinaticPlatform);
-   return(0);
+   return(INIT_SUCCEEDED);
   }
 
-int deinit()
+void OnDeinit(const int reason)
   {
    EventKillTimer();
-   return(0);
   }
 
-int start()
+void OnTick()
   {
    // Reference implementation placeholder: transport and signing are handled
    // by the companion Python reference in this repo.
-   return(0);
   }
 
 void OnTimer()
