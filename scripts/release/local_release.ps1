@@ -134,6 +134,11 @@ function Resolve-CompiledBinaryPath {
   return ($candidateFiles | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).FullName
 }
 
+function Get-TerminalRootFromMetaEditor {
+  param([string]$MetaEditorPath)
+  return Split-Path -Parent $MetaEditorPath
+}
+
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $repoRoot
 
@@ -163,20 +168,35 @@ $mt5SourcePath = Join-Path $repoRoot "src\finatic_mt_connector\ea_reference\mt5\
 $mt4BuildLogPath = Join-Path $env:TEMP "mt4-build.log"
 $mt5BuildLogPath = Join-Path $env:TEMP "mt5-build.log"
 
-& $mt4EditorPath /compile:"$mt4SourcePath" /log:"$mt4BuildLogPath"
+$mt4TerminalRootPath = Get-TerminalRootFromMetaEditor -MetaEditorPath $mt4EditorPath
+$mt5TerminalRootPath = Get-TerminalRootFromMetaEditor -MetaEditorPath $mt5EditorPath
+
+$mt4ExpertsPath = Join-Path $mt4TerminalRootPath "MQL4\Experts"
+$mt5ExpertsPath = Join-Path $mt5TerminalRootPath "MQL5\Experts"
+
+if (-not (Test-Path $mt4ExpertsPath)) { throw "MT4 Experts folder not found: $mt4ExpertsPath" }
+if (-not (Test-Path $mt5ExpertsPath)) { throw "MT5 Experts folder not found: $mt5ExpertsPath" }
+
+$mt4CompilePath = Join-Path $mt4ExpertsPath "FinaticMT4ConnectorEA.mq4"
+$mt5CompilePath = Join-Path $mt5ExpertsPath "FinaticMT5ConnectorEA.mq5"
+
+Copy-Item $mt4SourcePath $mt4CompilePath -Force
+Copy-Item $mt5SourcePath $mt5CompilePath -Force
+
+& $mt4EditorPath /compile:"$mt4CompilePath" /log:"$mt4BuildLogPath"
 if ($LASTEXITCODE -ne 0) {
   if (Test-Path $mt4BuildLogPath) { Get-Content $mt4BuildLogPath }
   throw "MT4 compilation failed."
 }
 
-& $mt5EditorPath /compile:"$mt5SourcePath" /log:"$mt5BuildLogPath"
+& $mt5EditorPath /compile:"$mt5CompilePath" /log:"$mt5BuildLogPath"
 if ($LASTEXITCODE -ne 0) {
   if (Test-Path $mt5BuildLogPath) { Get-Content $mt5BuildLogPath }
   throw "MT5 compilation failed."
 }
 
-$mt4BinaryPath = [System.IO.Path]::ChangeExtension($mt4SourcePath, ".ex4")
-$mt5BinaryPath = [System.IO.Path]::ChangeExtension($mt5SourcePath, ".ex5")
+$mt4BinaryPath = [System.IO.Path]::ChangeExtension($mt4CompilePath, ".ex4")
+$mt5BinaryPath = [System.IO.Path]::ChangeExtension($mt5CompilePath, ".ex5")
 $mt4BinaryPath = Resolve-CompiledBinaryPath -ExpectedPath $mt4BinaryPath -BinaryFilename "FinaticMT4ConnectorEA.ex4" -PlatformFolderName "MQL4"
 $mt5BinaryPath = Resolve-CompiledBinaryPath -ExpectedPath $mt5BinaryPath -BinaryFilename "FinaticMT5ConnectorEA.ex5" -PlatformFolderName "MQL5"
 
