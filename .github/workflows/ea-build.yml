@@ -23,6 +23,7 @@ jobs:
     name: Compile EAs and publish release assets
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
     runs-on: windows-latest
+    timeout-minutes: 45
     env:
       MT4_INSTALLER_URL: https://download.mql5.com/cdn/web/metaquotes.software.corp/mt4/mt4setup.exe
       MT5_INSTALLER_URL: https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe
@@ -63,8 +64,21 @@ jobs:
           Invoke-WebRequest -Uri "$env:MT4_INSTALLER_URL" -OutFile $mt4InstallerPath
           Invoke-WebRequest -Uri "$env:MT5_INSTALLER_URL" -OutFile $mt5InstallerPath
 
-          Start-Process -FilePath $mt4InstallerPath -ArgumentList "/silent" -Wait
-          Start-Process -FilePath $mt5InstallerPath -ArgumentList "/silent" -Wait
+          function Invoke-InstallerWithTimeout([string]$installerPath, [string]$label) {
+            $installerArguments = "/auto", "/silent", "/skipupdate"
+            $installerProcess = Start-Process -FilePath $installerPath -ArgumentList $installerArguments -PassThru
+            $processCompleted = $installerProcess.WaitForExit(300000)
+            if (-not $processCompleted) {
+              Stop-Process -Id $installerProcess.Id -Force -ErrorAction SilentlyContinue
+              throw "$label installer timed out after 5 minutes."
+            }
+            if ($installerProcess.ExitCode -ne 0) {
+              throw "$label installer failed with exit code $($installerProcess.ExitCode)."
+            }
+          }
+
+          Invoke-InstallerWithTimeout -installerPath $mt4InstallerPath -label "MT4"
+          Invoke-InstallerWithTimeout -installerPath $mt5InstallerPath -label "MT5"
 
       - name: Discover MetaEditor executables
         id: discover-metaeditors
