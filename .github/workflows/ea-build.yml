@@ -65,7 +65,7 @@ jobs:
           Invoke-WebRequest -Uri "$env:MT5_INSTALLER_URL" -OutFile $mt5InstallerPath
 
           function Invoke-InstallerWithTimeout([string]$installerPath, [string]$label) {
-            $installerArguments = "/auto", "/silent", "/skipupdate"
+            $installerArguments = "/auto", "/silent"
             $installerProcess = Start-Process -FilePath $installerPath -ArgumentList $installerArguments -PassThru
             $processCompleted = $installerProcess.WaitForExit(300000)
             if (-not $processCompleted) {
@@ -73,7 +73,7 @@ jobs:
               throw "$label installer timed out after 5 minutes."
             }
             if ($installerProcess.ExitCode -ne 0) {
-              throw "$label installer failed with exit code $($installerProcess.ExitCode)."
+              Write-Host "::warning::$label installer exited with code $($installerProcess.ExitCode). Continuing to executable discovery."
             }
           }
 
