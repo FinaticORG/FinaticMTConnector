@@ -269,33 +269,34 @@ Copy-Item $mt5BinaryPath (Join-Path $distDirectory "FinaticMT5ConnectorEA.ex5") 
 if (Test-Path $mt4BuildLogPath) { Copy-Item $mt4BuildLogPath (Join-Path $distDirectory "FinaticMT4ConnectorEA.build.log") -Force }
 if (Test-Path $mt5BuildLogPath) { Copy-Item $mt5BuildLogPath (Join-Path $distDirectory "FinaticMT5ConnectorEA.build.log") -Force }
 
-$checksumLines = Get-ChildItem $distDirectory -File |
-  Where-Object { $_.Name -ne "checksums.sha256" } |
-  ForEach-Object {
-    $fileHash = Get-FileHash $_.FullName -Algorithm SHA256
-    "$($fileHash.Hash.ToLower())  $($_.Name)"
-  }
+# Only EA binaries belong in shipped checksums.sha256 (matches GitHub release assets; no orphaned .build.log lines).
+$checksumLines = @("FinaticMT4ConnectorEA.ex4", "FinaticMT5ConnectorEA.ex5") | ForEach-Object {
+  $publishedPath = Join-Path $distDirectory $_
+  $fileHash = Get-FileHash $publishedPath -Algorithm SHA256
+  "$($fileHash.Hash.ToLower())  $_"
+}
 $checksumPath = Join-Path $distDirectory "checksums.sha256"
-Set-Content -Path $checksumPath -Value $checksumLines -Encoding UTF8
+[System.IO.File]::WriteAllLines($checksumPath, $checksumLines, [System.Text.UTF8Encoding]::new($false))
 
 $releaseNotesPath = Join-Path $distDirectory "release-notes.md"
 $recentChanges = git log --oneline -n 15
-@"
-## Finatic MT Connector $releaseTag
-
-### Included artifacts
-- FinaticMT4ConnectorEA.ex4
-- FinaticMT5ConnectorEA.ex5
-- checksums.sha256
-
-### Verification
-\`\`\`bash
-sha256sum -c checksums.sha256
-\`\`\`
-
-### Recent changes
-$recentChanges
-"@ | Set-Content -Path $releaseNotesPath -Encoding UTF8
+$releaseNotesLines = @(
+  "## Finatic MT Connector $releaseTag"
+  ""
+  "### Included artifacts"
+  "- FinaticMT4ConnectorEA.ex4"
+  "- FinaticMT5ConnectorEA.ex5"
+  "- checksums.sha256"
+  ""
+  "### Verification"
+  '```bash'
+  'sha256sum -c checksums.sha256'
+  '```'
+  ""
+  "### Recent changes"
+  $recentChanges
+)
+[System.IO.File]::WriteAllLines($releaseNotesPath, $releaseNotesLines, [System.Text.UTF8Encoding]::new($false))
 
 git add pyproject.toml
 git commit -m "chore(release): $releaseTag [skip ci] [skip release]"
