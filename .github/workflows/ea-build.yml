@@ -20,10 +20,10 @@ concurrency:
 
 jobs:
   build-and-release:
-    name: Publish EA source artifacts
+    name: Compile EAs and publish release assets
     if: github.event_name != 'workflow_run' || github.event.workflow_run.conclusion == 'success'
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
+    runs-on: [self-hosted, windows, mt-builder]
+    timeout-minutes: 45
     env:
       MT4_SOURCE_PATH: src/finatic_mt_connector/ea_reference/mt4/FinaticMT4ConnectorEA.mq4
       MT5_SOURCE_PATH: src/finatic_mt_connector/ea_reference/mt5/FinaticMT5ConnectorEA.mq5
@@ -51,18 +51,106 @@ jobs:
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
           git checkout "$release_tag"
 
-      - name: Collect EA source artifacts
-        shell: bash
+      - name: Discover MetaEditor executables
+        id: discover-metaeditors
+        shell: pwsh
         run: |
-          mkdir -p "$DIST_DIRECTORY"
-          cp "$MT4_SOURCE_PATH" "$DIST_DIRECTORY/FinaticMT4ConnectorEA.mq4"
-          cp "$MT5_SOURCE_PATH" "$DIST_DIRECTORY/FinaticMT5ConnectorEA.mq5"
+          $mt4Candidates = @(
+            "C:\Program Files\MetaTrader 4\metaeditor.exe",
+            "C:\Program Files (x86)\MetaTrader 4\metaeditor.exe"
+          )
+          $mt5Candidates = @(
+            "C:\Program Files\MetaTrader 5\metaeditor64.exe",
+            "C:\Program Files (x86)\MetaTrader 5\metaeditor64.exe"
+          )
+
+          $mt4MetaEditorPath = $mt4Candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+          $mt5MetaEditorPath = $mt5Candidates | Where-Object { Test-Path $_ } | Select-Object -First 1
+
+          if (-not $mt4MetaEditorPath) {
+            throw "Unable to locate MetaEditor executable for MT4 on self-hosted runner."
+          }
+          if (-not $mt5MetaEditorPath) {
+            throw "Unable to locate MetaEditor executable for MT5 on self-hosted runner."
+          }
+
+          "mt4_metaeditor_path=$mt4MetaEditorPath" >> $env:GITHUB_OUTPUT
+          "mt5_metaeditor_path=$mt5MetaEditorPath" >> $env:GITHUB_OUTPUT
+
+      - name: Compile MT4 EA
+        shell: pwsh
+        run: |
+          $distDirectory = "$env:GITHUB_WORKSPACE\$env:DIST_DIRECTORY"
+          New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
+
+          $mt4SourcePath = "$env:GITHUB_WORKSPACE\$env:MT4_SOURCE_PATH"
+          $mt4BuildLogPath = "$env:RUNNER_TEMP\mt4-build.log"
+
+          & "${{ steps.discover-metaeditors.outputs.mt4_metaeditor_path }}" /compile:"$mt4SourcePath" /log:"$mt4BuildLogPath"
+          $metaEditorExitCode = $LASTEXITCODE
+          if ($metaEditorExitCode -ne 0) {
+            if (Test-Path $mt4BuildLogPath) {
+              Get-Content $mt4BuildLogPath
+            }
+            throw "MT4 compilation command failed. Exit code: $metaEditorExitCode"
+          }
+
+          $mt4CompiledPath = [System.IO.Path]::ChangeExtension($mt4SourcePath, ".ex4")
+          if (-not (Test-Path $mt4CompiledPath)) {
+            if (Test-Path $mt4BuildLogPath) {
+              Get-Content $mt4BuildLogPath
+            }
+            throw "MT4 compilation did not produce FinaticMT4ConnectorEA.ex4."
+          }
+          Copy-Item $mt4CompiledPath "$distDirectory\FinaticMT4ConnectorEA.ex4" -Force
+
+          if (Test-Path $mt4BuildLogPath) {
+            Copy-Item $mt4BuildLogPath "$distDirectory\FinaticMT4ConnectorEA.build.log" -Force
+          }
+
+      - name: Compile MT5 EA
+        shell: pwsh
+        run: |
+          $distDirectory = "$env:GITHUB_WORKSPACE\$env:DIST_DIRECTORY"
+          New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
+
+          $mt5SourcePath = "$env:GITHUB_WORKSPACE\$env:MT5_SOURCE_PATH"
+          $mt5BuildLogPath = "$env:RUNNER_TEMP\mt5-build.log"
+
+          & "${{ steps.discover-metaeditors.outputs.mt5_metaeditor_path }}" /compile:"$mt5SourcePath" /log:"$mt5BuildLogPath"
+          $metaEditorExitCode = $LASTEXITCODE
+          if ($metaEditorExitCode -ne 0) {
+            if (Test-Path $mt5BuildLogPath) {
+              Get-Content $mt5BuildLogPath
+            }
+            throw "MT5 compilation command failed. Exit code: $metaEditorExitCode"
+          }
+
+          $mt5CompiledPath = [System.IO.Path]::ChangeExtension($mt5SourcePath, ".ex5")
+          if (-not (Test-Path $mt5CompiledPath)) {
+            if (Test-Path $mt5BuildLogPath) {
+              Get-Content $mt5BuildLogPath
+            }
+            throw "MT5 compilation did not produce FinaticMT5ConnectorEA.ex5."
+          }
+          Copy-Item $mt5CompiledPath "$distDirectory\FinaticMT5ConnectorEA.ex5" -Force
+
+          if (Test-Path $mt5BuildLogPath) {
+            Copy-Item $mt5BuildLogPath "$distDirectory\FinaticMT5ConnectorEA.build.log" -Force
+          }
 
       - name: Generate SHA-256 checksums
-        shell: bash
+        shell: pwsh
         run: |
-          cd "$DIST_DIRECTORY"
-          sha256sum FinaticMT4ConnectorEA.mq4 FinaticMT5ConnectorEA.mq5 > checksums.sha256
+          $distDirectory = "$env:GITHUB_WORKSPACE\$env:DIST_DIRECTORY"
+          $checksumOutputPath = "$distDirectory\checksums.sha256"
+
+          Get-ChildItem $distDirectory -File |
+            Where-Object { $_.Name -notmatch "checksums\.sha256" } |
+            ForEach-Object {
+              $fileHash = Get-FileHash $_.FullName -Algorithm SHA256
+              "$($fileHash.Hash.ToLower())  $($_.Name)"
+            } | Out-File -FilePath $checksumOutputPath -Encoding utf8
 
       - name: Build release notes
         shell: pwsh
@@ -74,8 +162,8 @@ jobs:
           ## Finatic MT Connector $tagName
 
           ### Included artifacts
-          - FinaticMT4ConnectorEA.mq4
-          - FinaticMT5ConnectorEA.mq5
+          - FinaticMT4ConnectorEA.ex4
+          - FinaticMT5ConnectorEA.ex5
           - checksums.sha256
 
           ### Verification
@@ -102,4 +190,9 @@ jobs:
           tag_name: ${{ steps.release-tag.outputs.release_tag }}
           generate_release_notes: true
           body_path: ${{ env.DIST_DIRECTORY }}/release-notes.md
-          files: ${{ env.DIST_DIRECTORY }}/*
+          files: |
+            ${{ env.DIST_DIRECTORY }}/FinaticMT4ConnectorEA.ex4
+            ${{ env.DIST_DIRECTORY }}/FinaticMT5ConnectorEA.ex5
+            ${{ env.DIST_DIRECTORY }}/checksums.sha256
+            ${{ env.DIST_DIRECTORY }}/FinaticMT4ConnectorEA.build.log
+            ${{ env.DIST_DIRECTORY }}/FinaticMT5ConnectorEA.build.log
