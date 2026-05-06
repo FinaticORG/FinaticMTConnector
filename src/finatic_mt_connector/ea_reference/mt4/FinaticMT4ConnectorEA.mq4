@@ -1,20 +1,29 @@
 #property strict
-#property version   "0.1.0"
-#property description "Finatic MT4 Connector Reference EA"
+#property version   "0.2.0"
+#property description "Finatic MT4 Connector — posts JSON heartbeats to Finatic Background (see WebRequest allowlist in MT4 options)."
 
 input string FinaticPlatform = "mt4";
 input string FinaticConnectorId = "";
 input string FinaticConnectorSecret = "";
 input string FinaticIngestUrl = "";
-input int FinaticSigningSchemeVersion = 1;
-input int FinaticTimestampSkewSeconds = 300;
-input bool FinaticSnapshotRequired = true;
-input int FinaticHeartbeatSeconds = 15;
+input int    FinaticSigningSchemeVersion = 1;
+input int    FinaticTimestampSkewSeconds = 300;
+input bool   FinaticSnapshotRequired = true;
+input int    FinaticHeartbeatSeconds = 15;
+input int    FinaticSecretVersion = 1;
+
+int   g_heartbeatSequence = 0;
+bool  g_ingestConfigurationValid = false;
+string g_heartbeatRequestUrl = "";
 
 int OnInit()
   {
+   g_ingestConfigurationValid = finaticValidateIngestConfiguration();
+   if(!g_ingestConfigurationValid)
+     return(INIT_FAILED);
+   g_heartbeatRequestUrl = finaticBuildHeartbeatUrl(FinaticIngestUrl);
    EventSetTimer(FinaticHeartbeatSeconds);
-   Print("Finatic MT4 Connector initialized. Platform=", FinaticPlatform);
+   Print("Finatic MT4 Connector: timer=", FinaticHeartbeatSeconds, "s URL=", g_heartbeatRequestUrl);
    return(INIT_SUCCEEDED);
   }
 
@@ -25,11 +34,70 @@ void OnDeinit(const int reason)
 
 void OnTick()
   {
-   // Reference implementation placeholder: transport and signing are handled
-   // by the companion Python reference in this repo.
+   // Timer-driven heartbeat only; push events/snapshot via future EA logic if needed.
   }
 
 void OnTimer()
   {
-   // Heartbeat cadence placeholder for reference EA implementation.
+   if(!g_ingestConfigurationValid)
+     return;
+   if(StringLen(g_heartbeatRequestUrl) < 8)
+     return;
+   string jsonBody =
+     "{\"sequence\":" + IntegerToString(g_heartbeatSequence) +
+     ",\"secret_version\":" + IntegerToString(FinaticSecretVersion) +
+     ",\"platform\":\"" + FinaticPlatform +
+     "\",\"payload\":{}}";
+   uchar  postData[];
+   StringToCharArray(jsonBody, postData, 0, WHOLE_ARRAY, CP_UTF8);
+   string httpHeaders = "Content-Type: application/json\r\n";
+   uchar  responseData[];
+   string responseHeaders;
+   ResetLastError();
+   int httpCode = WebRequest("POST", g_heartbeatRequestUrl, httpHeaders, 8000, postData, responseData, responseHeaders);
+   if(httpCode == -1)
+     {
+      int err = GetLastError();
+      Print("Finatic heartbeat WebRequest failed. Error=", err,
+            " — Tools -> Options -> Expert Advisors -> Allow WebRequest (e.g. http://localhost:8001).");
+      return;
+     }
+   if(httpCode < 200 || httpCode > 299)
+     {
+      Print("Finatic heartbeat HTTP ", httpCode, " body=", CharArrayToString(responseData, 0, WHOLE_ARRAY, CP_UTF8));
+      return;
+     }
+   g_heartbeatSequence++;
+  }
+
+bool finaticValidateIngestConfiguration()
+  {
+   if(StringLen(FinaticIngestUrl) < 12)
+     {
+      Print("Finatic: set FinaticIngestUrl from the Connect portal.");
+      return(false);
+     }
+   if(StringFind(FinaticIngestUrl, "http://", 0) != 0 && StringFind(FinaticIngestUrl, "https://", 0) != 0)
+     {
+      Print("Finatic: FinaticIngestUrl must start with http:// or https://");
+      return(false);
+     }
+   if(StringLen(FinaticPlatform) < 2)
+     {
+      Print("Finatic: set FinaticPlatform to mt4 or mt5");
+      return(false);
+     }
+   if(FinaticSecretVersion < 1)
+     return(false);
+   return(true);
+  }
+
+string finaticBuildHeartbeatUrl(string baseUrl)
+  {
+   string trimmed = baseUrl;
+   StringTrimLeft(trimmed);
+   StringTrimRight(trimmed);
+   while(StringLen(trimmed) > 0 && StringGetCharacter(trimmed, StringLen(trimmed) - 1) == '/')
+      trimmed = StringSubstr(trimmed, 0, StringLen(trimmed) - 1);
+   return(trimmed + "/heartbeat");
   }
