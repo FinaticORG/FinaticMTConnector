@@ -12,7 +12,6 @@ class ConnectorStateEnum(StrEnum):
     REGISTERING = "REGISTERING"
     AWAITING_FIRST_HEARTBEAT = "AWAITING_FIRST_HEARTBEAT"
     LIVE_HTTPS = "LIVE_HTTPS"
-    LIVE_WEBSOCKET = "LIVE_WEBSOCKET"
     DEGRADED = "DEGRADED"
     STALE = "STALE"
     OFFLINE = "OFFLINE"
@@ -29,22 +28,11 @@ ALLOWED_TRANSITIONS: dict[ConnectorStateEnum, set[ConnectorStateEnum]] = {
     },
     ConnectorStateEnum.AWAITING_FIRST_HEARTBEAT: {
         ConnectorStateEnum.LIVE_HTTPS,
-        ConnectorStateEnum.LIVE_WEBSOCKET,
         ConnectorStateEnum.COOLDOWN,
         ConnectorStateEnum.REVOKED,
         ConnectorStateEnum.FAILED,
     },
     ConnectorStateEnum.LIVE_HTTPS: {
-        ConnectorStateEnum.LIVE_WEBSOCKET,
-        ConnectorStateEnum.DEGRADED,
-        ConnectorStateEnum.STALE,
-        ConnectorStateEnum.OFFLINE,
-        ConnectorStateEnum.COOLDOWN,
-        ConnectorStateEnum.REVOKED,
-        ConnectorStateEnum.FAILED,
-    },
-    ConnectorStateEnum.LIVE_WEBSOCKET: {
-        ConnectorStateEnum.LIVE_HTTPS,
         ConnectorStateEnum.DEGRADED,
         ConnectorStateEnum.STALE,
         ConnectorStateEnum.OFFLINE,
@@ -54,7 +42,6 @@ ALLOWED_TRANSITIONS: dict[ConnectorStateEnum, set[ConnectorStateEnum]] = {
     },
     ConnectorStateEnum.DEGRADED: {
         ConnectorStateEnum.LIVE_HTTPS,
-        ConnectorStateEnum.LIVE_WEBSOCKET,
         ConnectorStateEnum.STALE,
         ConnectorStateEnum.OFFLINE,
         ConnectorStateEnum.COOLDOWN,
@@ -63,7 +50,6 @@ ALLOWED_TRANSITIONS: dict[ConnectorStateEnum, set[ConnectorStateEnum]] = {
     },
     ConnectorStateEnum.STALE: {
         ConnectorStateEnum.LIVE_HTTPS,
-        ConnectorStateEnum.LIVE_WEBSOCKET,
         ConnectorStateEnum.OFFLINE,
         ConnectorStateEnum.COOLDOWN,
         ConnectorStateEnum.REVOKED,
