@@ -32,8 +32,12 @@ def test_build_events_envelope_sets_kind_platform_and_events_payload() -> None:
 
 def test_build_snapshot_and_heartbeat_increment_sequence() -> None:
     connector = _build_connector()
+    from finatic_mt_connector.ea_reference.payload_contract import (
+        default_snapshot_payload,
+    )
+
     snapshot_envelope = connector.build_snapshot_envelope(
-        {"positions": [], "orders": []}
+        default_snapshot_payload()
     )
     heartbeat_envelope = connector.build_heartbeat_envelope()
 
@@ -41,6 +45,44 @@ def test_build_snapshot_and_heartbeat_increment_sequence() -> None:
     assert heartbeat_envelope["kind"] == "heartbeat"
     assert snapshot_envelope["sequence"] == 1
     assert heartbeat_envelope["sequence"] == 2
+
+
+def test_push_minimal_snapshot_and_event_use_deployed_webhook_shape() -> None:
+    from finatic_mt_connector.ea_reference.payload_contract import (
+        default_snapshot_payload,
+        flatten_event_record_for_webhook,
+    )
+
+    connector = _build_connector()
+    mock_http_response = MagicMock()
+    mock_http_response.status = 200
+    mock_http_response.read.return_value = b"{}"
+    mock_context = MagicMock()
+    mock_context.__enter__.return_value = mock_http_response
+    mock_context.__exit__.return_value = None
+
+    with patch(
+        "finatic_mt_connector.ea_reference.reference_connector_base.request.urlopen",
+        return_value=mock_context,
+    ) as mock_urlopen:
+        snapshot_response = connector.push_minimal_snapshot(
+            default_snapshot_payload()
+        )
+        flat_event = flatten_event_record_for_webhook(
+            {
+                "event_type": "balance.update",
+                "payload": {"login": "1", "balance": 10.0},
+            }
+        )
+        event_response = connector.push_minimal_flat_event(flat_event)
+
+    assert snapshot_response.status_code == 200
+    assert event_response.status_code == 200
+    assert mock_urlopen.call_count == 2
+    snapshot_url = mock_urlopen.call_args_list[0].args[0].full_url
+    assert snapshot_url.endswith("/snapshot")
+    event_url = mock_urlopen.call_args_list[1].args[0].full_url
+    assert event_url.endswith("/events")
 
 
 def test_push_minimal_heartbeat_posts_deployed_webhook_shape() -> None:

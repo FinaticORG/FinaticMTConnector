@@ -119,30 +119,34 @@ class BaseReferenceConnector:
             payload=heartbeat_payload or {"status": "alive"},
         )
 
-    def push_minimal_heartbeat(self) -> ReferenceTransportResponse:
-        """POST heartbeat JSON compatible with deployed Background webhooks.
-
-        Matches MetaTrader reference EA behavior: increments sequence only after an
-        HTTP 2xx response (same as MQL ``OnTimer`` success path).
-        """
+    def _minimal_webhook_url(self, route_suffix: str) -> str:
         connector_configuration = self.connector_configuration
-        sequence_index = self._minimal_webhook_sequence
-        request_url = (
+        return (
             f"{connector_configuration.ingest_base_url.rstrip('/')}"
             f"/v1/mt/connectors/{connector_configuration.connector_id}"
-            "/heartbeat"
+            f"/{route_suffix.lstrip('/')}"
         )
+
+    def push_minimal_webhook(
+        self,
+        *,
+        route_suffix: str,
+        payload: dict[str, Any],
+    ) -> ReferenceTransportResponse:
+        """POST minimal ``MTIngressRequestBody`` JSON to a deployed Background route."""
+        connector_configuration = self.connector_configuration
+        sequence_index = self._minimal_webhook_sequence
         minimal_body = {
             "sequence": sequence_index,
             "secret_version": connector_configuration.secret_version,
             "platform": connector_configuration.platform,
-            "payload": {},
+            "payload": payload,
         }
         request_body = json.dumps(minimal_body, separators=(",", ":")).encode(
             "utf-8"
         )
         http_request = request.Request(
-            request_url,
+            self._minimal_webhook_url(route_suffix),
             data=request_body,
             headers={"Content-Type": "application/json"},
             method="POST",
@@ -164,6 +168,34 @@ class BaseReferenceConnector:
             self._minimal_webhook_sequence = sequence_index + 1
         return ReferenceTransportResponse(
             status_code=response_status, body_text=response_text
+        )
+
+    def push_minimal_heartbeat(self) -> ReferenceTransportResponse:
+        """POST heartbeat JSON compatible with deployed Background webhooks."""
+        return self.push_minimal_webhook(route_suffix="heartbeat", payload={})
+
+    def push_minimal_snapshot(
+        self, snapshot_payload: dict[str, Any]
+    ) -> ReferenceTransportResponse:
+        """POST snapshot bootstrap payload (flat ``payload`` object)."""
+        return self.push_minimal_webhook(
+            route_suffix="snapshot", payload=snapshot_payload
+        )
+
+    def push_minimal_flat_event(
+        self, flat_event_payload: dict[str, Any]
+    ) -> ReferenceTransportResponse:
+        """POST one stream event with ``event_type`` at the top level of ``payload``."""
+        return self.push_minimal_webhook(
+            route_suffix="events", payload=flat_event_payload
+        )
+
+    def push_minimal_batched_events(
+        self, event_records: list[dict[str, Any]]
+    ) -> ReferenceTransportResponse:
+        """POST multiple events under ``payload.events`` (Background expands)."""
+        return self.push_minimal_webhook(
+            route_suffix="events", payload={"events": event_records}
         )
 
     def _post_signed_envelope(

@@ -46,6 +46,16 @@ class TransactionAppendEventRecord(BaseEventRecord):
     payload: dict[str, Any]
 
 
+class BalanceUpsertEventRecord(BaseEventRecord):
+    event_type: Literal["balance.upsert"]
+    payload: dict[str, Any]
+
+
+class BalanceUpdateEventRecord(BaseEventRecord):
+    event_type: Literal["balance.update"]
+    payload: dict[str, Any]
+
+
 class ConnectionStateChangedEventRecord(BaseEventRecord):
     event_type: Literal["connection.state_changed"]
     payload: dict[str, Any]
@@ -61,6 +71,8 @@ EventRecord = (
     | OrderUpsertEventRecord
     | OrderFillEventRecord
     | TransactionAppendEventRecord
+    | BalanceUpsertEventRecord
+    | BalanceUpdateEventRecord
     | ConnectionStateChangedEventRecord
     | ConnectorHeartbeatEventRecord
 )

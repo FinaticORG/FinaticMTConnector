@@ -8,6 +8,10 @@ from typing import Any
 from uuid import UUID, uuid4
 
 from finatic_mt_connector.contracts.envelope import EnvelopeKind
+from finatic_mt_connector.ea_reference.payload_contract import (
+    default_snapshot_payload,
+    flatten_event_record_for_webhook,
+)
 from finatic_mt_connector.security.signing import (
     build_signing_headers,
     sign_payload,
@@ -112,11 +116,9 @@ class MTEnvelopeSimulator:
     def build_snapshot_case(
         self, *, snapshot_payload: dict[str, Any] | None = None
     ) -> MTEnvelopeSimulationCase:
-        normalized_snapshot_payload = snapshot_payload or {
-            "positions": [],
-            "orders": [],
-            "balances": [],
-        }
+        normalized_snapshot_payload = (
+            snapshot_payload or default_snapshot_payload()
+        )
         envelope_payload = self._base_envelope(
             kind=EnvelopeKind.SNAPSHOT, payload=normalized_snapshot_payload
         )
@@ -125,6 +127,18 @@ class MTEnvelopeSimulator:
             envelope_payload=envelope_payload,
             request_headers=self._headers_for_envelope(envelope_payload),
         )
+
+    def build_flat_event_webhook_payload(
+        self, *, event_record: dict[str, Any] | None = None
+    ) -> dict[str, Any]:
+        """Payload shape for deployed ``POST .../events`` (flat, not batched)."""
+        record = event_record or {
+            "event_id": str(uuid4()),
+            "event_type": "position.upsert",
+            "source_timestamp": self._timestamp_now(),
+            "payload": {"symbol": "EURUSD", "quantity": 1.0, "login": "1001"},
+        }
+        return flatten_event_record_for_webhook(record)
 
     def build_heartbeat_case(self) -> MTEnvelopeSimulationCase:
         envelope_payload = self._base_envelope(
