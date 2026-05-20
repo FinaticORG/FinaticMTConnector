@@ -1,6 +1,5 @@
-#property strict
-#property version   "0.3.0"
-#property description "Finatic MT4 Connector — heartbeat, snapshot bootstrap, and account snapshot to Finatic Background."
+#property version   "1.00"
+#property description "Finatic MT4 Connector v0.1.0 — heartbeat, snapshot bootstrap, and account snapshot to Finatic Background."
 
 input string FinaticPlatform = "mt4";
 input string FinaticConnectorId = "";

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "finatic-mt-connector"
-version = "0.1.1"
+version = "0.1.0"
 description = "Customer-hosted MT4/MT5 connector contracts and reference implementation."
 readme = "README.md"
 requires-python = ">=3.12,<3.14"

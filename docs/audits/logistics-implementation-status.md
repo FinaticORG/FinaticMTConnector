@@ -20,7 +20,7 @@
 | `p1-api-connect-service` | Service lifecycle | `.../core/services/mt_connector_service.py` — `create_connector`, `list_connectors`, `rotate_secret`, `revoke_connector`, `build_ea_configuration_payload`; persists `MtConnectors` with encrypted signing secret. | **Done** |
 | `p1-api-tests` | Unit tests | `tests/unit/routers/mt_connectors/test_mt_connectors_router.py`, `tests/unit/test_mt_connector_service.py` (see pytest command above). | **Done** |
 | `p1-api-mt-order-bridge` | Orders → MT command queue | `.../core/services/broker_service.py` — live `mt4`/`mt5` `place_order` / `cancel_order` / `modify_order`: `MTConnectorService.get_connector_id_for_connection` supplies `connector_id`; `create_broker` passes `redis_client` for executor enqueue. Missing `mt_connectors` row → `MT_CONNECTOR_NOT_FOUND`. Sandbox skips MT order context. **Gap:** `command_result` ingress + blocking API semantics remain Phase 1.5 (`p1-5-command-roundtrip`). | **Partial** |
-| `p1-5-control-plane-linkage` | Connect creates **broker connection +** MT row | `MTConnectorService.create_connector` takes `connection_id` and writes `MtConnectors.connection_id` — **caller must** create the standard connection first. **Gap:** no single atomic “connect” in API that both creates `user_broker_connections` (or equivalent) and connector row unless higher layer does it; confirm portal flow always creates connection before `POST /mt/connect`. | **Verify / tighten** |
+| `p1-5-control-plane-linkage` | Connect creates **broker connection +** MT row | **Done (2026-05-18):** `BrokerService._connect_push_agent_broker` for `mt4`/`mt5` creates `user_broker_connections`, `company_access`, and `mt_connectors` in one transaction; `POST /api/beta/brokers/connect` returns `agent_configuration`. Portal `MTConnectScreen` uses `connectPushAgentBroker`. Legacy `POST /mt/connect` delegates to the same path. FK `fk_mt_connectors_connection_id` migration `20260518120000_mt_connectors_connection_fk.sql`. | **Done** |
 
 ---
 
@@ -44,7 +44,7 @@
 
 | Plan id | Gap | Status |
 |--------|-----|--------|
-| `p1-5-projector-persistence-integration` | Ingress → adapter → projector → **canonical tables** is only partially satisfied: projector triggers polling pipeline, not full MT-specific persistence of snapshot payload fields. | **Open (Phase 1.5)** |
+| `p1-5-projector-persistence-integration` | **Done (push path):** `webhook_routes.py` calls `persist_mt_stream_event_to_broker_data` for `mt4`/`mt5` and does **not** enqueue `StreamProjector`. Polling worker skips `mt4`/`mt5` (`SKIPPED:POLL_SYNC_MT_PUSH_INGRESS`). Broker `get_*` raises push-only `NotImplementedError`. | **Done (push-only)** |
 
 ---
 

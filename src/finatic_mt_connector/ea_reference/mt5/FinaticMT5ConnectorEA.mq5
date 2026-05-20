@@ -1,6 +1,5 @@
-#property strict
-#property version   "0.3.0"
-#property description "Finatic MT5 Connector — heartbeat, snapshot bootstrap, and account snapshot to Finatic Background."
+#property version   "1.00"
+#property description "Finatic MT5 Connector v0.1.0 — signed heartbeat/snapshot/events, command drain, transaction-driven incremental updates."
 
 input string FinaticPlatform = "mt5";
 input string FinaticConnectorId = "";
@@ -11,12 +10,13 @@ input int    FinaticTimestampSkewSeconds = 300;
 input bool   FinaticSnapshotRequired = true;
 input int    FinaticHeartbeatSeconds = 15;
 input int    FinaticSecretVersion = 1;
+input bool   FinaticSignEnvelopes = true;
 
-long  g_ingestSequence = 0;
-bool  g_ingestConfigurationValid = false;
+long   g_ingestSequence = 0;
+bool   g_ingestConfigurationValid = false;
 string g_ingestBaseUrl = "";
 
-void OnInit()
+int OnInit()
   {
    g_ingestConfigurationValid = finaticValidateIngestConfiguration();
    if(!g_ingestConfigurationValid)
@@ -25,7 +25,7 @@ void OnInit()
    if(FinaticSnapshotRequired)
       finaticPushSnapshot();
    EventSetTimer(FinaticHeartbeatSeconds);
-   Print("Finatic MT5 Connector: timer=", FinaticHeartbeatSeconds, "s base=", g_ingestBaseUrl);
+   Print("Finatic MT5 Connector v0.1.0: timer=", FinaticHeartbeatSeconds, "s base=", g_ingestBaseUrl, " signed=", FinaticSignEnvelopes);
    return(INIT_SUCCEEDED);
   }
 
@@ -47,6 +47,20 @@ void OnTimer()
       return;
    if(finaticResponseRequestsSnapshot(responseBody))
       finaticPushSnapshot();
+   finaticDrainPendingCommands(responseBody);
+  }
+
+void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest& request, const MqlTradeResult& result)
+  {
+   if(!g_ingestConfigurationValid)
+     return;
+   if(trans.type != TRADE_TRANSACTION_DEAL_ADD && trans.type != TRADE_TRANSACTION_ORDER_ADD &&
+      trans.type != TRADE_TRANSACTION_ORDER_UPDATE && trans.type != TRADE_TRANSACTION_ORDER_DELETE)
+     return;
+
+   string eventsJson = "[" + finaticBuildTransactionEventJson(trans) + "]";
+   string innerPayload = "{\"events\":" + eventsJson + "}";
+   finaticPostMinimalRoute("events", innerPayload);
   }
 
 bool finaticValidateIngestConfiguration()
@@ -65,6 +79,11 @@ bool finaticValidateIngestConfiguration()
      return(false);
    if(FinaticSecretVersion < 1)
       return(false);
+   if(FinaticSignEnvelopes && StringLen(FinaticConnectorSecret) < 8)
+     {
+      Print("Finatic: signed envelopes require FinaticConnectorSecret.");
+      return(false);
+     }
    return(true);
   }
 
@@ -165,6 +184,39 @@ void finaticPushSnapshot()
    finaticPostMinimalRoute("snapshot", innerPayload);
   }
 
+string finaticBuildTransactionEventJson(const MqlTradeTransaction& trans)
+  {
+   string login = IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN));
+   if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
+     {
+      string symbol = finaticJsonEscape(trans.symbol);
+      return(
+         "{\"event_type\":\"fill\",\"payload\":{\"deal_id\":\"" + IntegerToString((long)trans.deal) +
+         "\",\"order_id\":\"" + IntegerToString((long)trans.order) +
+         "\",\"symbol\":\"" + symbol +
+         "\",\"volume\":" + DoubleToString(trans.volume, 4) +
+         ",\"price\":" + DoubleToString(trans.price, 5) +
+         ",\"login\":\"" + login + "\"}}"
+      );
+     }
+   string side = "buy";
+   if(trans.order_type == ORDER_TYPE_SELL || trans.order_type == ORDER_TYPE_SELL_LIMIT || trans.order_type == ORDER_TYPE_SELL_STOP)
+      side = "sell";
+   string status = "working";
+   if(trans.type == TRADE_TRANSACTION_ORDER_DELETE)
+      status = "canceled";
+   string symbol2 = finaticJsonEscape(trans.symbol);
+   return(
+      "{\"event_type\":\"order.upsert\",\"payload\":{\"order_id\":\"" + IntegerToString((long)trans.order) +
+      "\",\"symbol\":\"" + symbol2 +
+      "\",\"side\":\"" + side +
+      "\",\"status\":\"" + status +
+      "\",\"price\":" + DoubleToString(trans.price, 5) +
+      ",\"volume\":" + DoubleToString(trans.volume, 4) +
+      ",\"login\":\"" + login + "\"}}"
+   );
+  }
+
 bool finaticResponseRequestsSnapshot(string responseBody)
   {
    return(
@@ -173,19 +225,168 @@ bool finaticResponseRequestsSnapshot(string responseBody)
    );
   }
 
+void finaticDrainPendingCommands(string heartbeatResponseBody)
+  {
+   int searchPosition = StringFind(heartbeatResponseBody, "\"pending_commands\"", 0);
+   if(searchPosition < 0)
+      return;
+   int openBracket = StringFind(heartbeatResponseBody, "[", searchPosition);
+   if(openBracket < 0)
+      return;
+   int closeBracket = StringFind(heartbeatResponseBody, "]", openBracket);
+   if(closeBracket <= openBracket + 1)
+      return;
+   string commandsBlock = StringSubstr(heartbeatResponseBody, openBracket + 1, closeBracket - openBracket - 1);
+   if(StringLen(commandsBlock) < 2)
+      return;
+   int commandCursor = 0;
+   while(commandCursor < StringLen(commandsBlock))
+     {
+      int objectStart = StringFind(commandsBlock, "{", commandCursor);
+      if(objectStart < 0)
+         break;
+      int objectEnd = StringFind(commandsBlock, "}", objectStart);
+      if(objectEnd < 0)
+         break;
+      string commandObject = StringSubstr(commandsBlock, objectStart, objectEnd - objectStart + 1);
+      string commandIdentifier = finaticExtractJsonStringField(commandObject, "command_id");
+      if(StringLen(commandIdentifier) > 0)
+         finaticPostCommandResult(commandIdentifier);
+      commandCursor = objectEnd + 1;
+     }
+  }
+
+string finaticExtractJsonStringField(string jsonObjectText, string fieldName)
+  {
+   string needle = "\"" + fieldName + "\"";
+   int needlePosition = StringFind(jsonObjectText, needle, 0);
+   if(needlePosition < 0)
+      return("");
+   int firstQuote = StringFind(jsonObjectText, "\"", needlePosition + StringLen(needle));
+   if(firstQuote < 0)
+      return("");
+   int closingQuote = StringFind(jsonObjectText, "\"", firstQuote + 1);
+   if(closingQuote < 0)
+      return("");
+   return(StringSubstr(jsonObjectText, firstQuote + 1, closingQuote - firstQuote - 1));
+  }
+
+void finaticPostCommandResult(string commandIdentifier)
+  {
+   string innerPayload =
+      "{\"command_id\":\"" + commandIdentifier +
+      "\",\"accepted\":true,\"ea_result\":{\"received_at_ms\":" + IntegerToString((long)GetTickCount()) + "}}";
+   finaticPostMinimalRoute("command-result", innerPayload);
+  }
+
+string finaticBuildCanonicalPayloadJson(long sequenceNumber, int secretVersion, string platformValue, string innerPayloadJson)
+  {
+   // Canonical JSON: keys sorted alphabetically, no spaces.
+   return(
+      "{\"payload\":" + innerPayloadJson +
+      ",\"platform\":\"" + platformValue +
+      "\",\"secret_version\":" + IntegerToString(secretVersion) +
+      ",\"sequence\":" + IntegerToString(sequenceNumber) + "}"
+   );
+  }
+
+string finaticHmacSha256Hex(string secretValue, string messageValue)
+  {
+   uchar secretBytes[];
+   StringToCharArray(secretValue, secretBytes, 0, WHOLE_ARRAY, CP_UTF8);
+   // StringToCharArray appends terminating null when WHOLE_ARRAY used; trim it.
+   if(ArraySize(secretBytes) > 0 && secretBytes[ArraySize(secretBytes) - 1] == 0)
+      ArrayResize(secretBytes, ArraySize(secretBytes) - 1);
+
+   uchar keyBlock[];
+   ArrayResize(keyBlock, 64);
+   ArrayInitialize(keyBlock, 0);
+   if(ArraySize(secretBytes) > 64)
+     {
+      uchar hashedKey[];
+      uchar empty[];
+      CryptEncode(CRYPT_HASH_SHA256, secretBytes, empty, hashedKey);
+      for(int i = 0; i < 32 && i < ArraySize(hashedKey); i++)
+         keyBlock[i] = hashedKey[i];
+     }
+   else
+     {
+      for(int i = 0; i < ArraySize(secretBytes); i++)
+         keyBlock[i] = secretBytes[i];
+     }
+
+   uchar innerKeyPad[];
+   uchar outerKeyPad[];
+   ArrayResize(innerKeyPad, 64);
+   ArrayResize(outerKeyPad, 64);
+   for(int i = 0; i < 64; i++)
+     {
+      innerKeyPad[i] = (uchar)(keyBlock[i] ^ 0x36);
+      outerKeyPad[i] = (uchar)(keyBlock[i] ^ 0x5c);
+     }
+
+   uchar messageBytes[];
+   StringToCharArray(messageValue, messageBytes, 0, WHOLE_ARRAY, CP_UTF8);
+   if(ArraySize(messageBytes) > 0 && messageBytes[ArraySize(messageBytes) - 1] == 0)
+      ArrayResize(messageBytes, ArraySize(messageBytes) - 1);
+
+   uchar innerInput[];
+   ArrayResize(innerInput, 64 + ArraySize(messageBytes));
+   for(int i = 0; i < 64; i++)
+      innerInput[i] = innerKeyPad[i];
+   for(int j = 0; j < ArraySize(messageBytes); j++)
+      innerInput[64 + j] = messageBytes[j];
+
+   uchar innerHash[];
+   uchar emptyKey[];
+   CryptEncode(CRYPT_HASH_SHA256, innerInput, emptyKey, innerHash);
+
+   uchar outerInput[];
+   ArrayResize(outerInput, 64 + ArraySize(innerHash));
+   for(int i = 0; i < 64; i++)
+      outerInput[i] = outerKeyPad[i];
+   for(int j = 0; j < ArraySize(innerHash); j++)
+      outerInput[64 + j] = innerHash[j];
+
+   uchar outerHash[];
+   CryptEncode(CRYPT_HASH_SHA256, outerInput, emptyKey, outerHash);
+
+   string hexResult = "";
+   for(int i = 0; i < ArraySize(outerHash); i++)
+     {
+      string byteHex = StringFormat("%02x", outerHash[i]);
+      hexResult += byteHex;
+     }
+   return(hexResult);
+  }
+
 string finaticPostMinimalRoute(string routeSuffix, string innerPayloadJson)
   {
    if(StringLen(g_ingestBaseUrl) < 8)
       return("");
    string requestUrl = finaticBuildRouteUrl(routeSuffix);
-   string jsonBody =
-      "{\"sequence\":" + IntegerToString(g_ingestSequence) +
-      ",\"secret_version\":" + IntegerToString(FinaticSecretVersion) +
-      ",\"platform\":\"" + FinaticPlatform +
-      "\",\"payload\":" + innerPayloadJson + "}";
+   string canonicalBody = finaticBuildCanonicalPayloadJson(
+      g_ingestSequence,
+      FinaticSecretVersion,
+      FinaticPlatform,
+      innerPayloadJson
+   );
    uchar  postData[];
-   StringToCharArray(jsonBody, postData, 0, WHOLE_ARRAY, CP_UTF8);
+   StringToCharArray(canonicalBody, postData, 0, WHOLE_ARRAY, CP_UTF8);
+   if(ArraySize(postData) > 0 && postData[ArraySize(postData) - 1] == 0)
+      ArrayResize(postData, ArraySize(postData) - 1);
+
    string httpHeaders = "Content-Type: application/json\r\n";
+   httpHeaders += "X-Finatic-Connector-Id: " + FinaticConnectorId + "\r\n";
+   httpHeaders += "X-Finatic-Secret-Version: " + IntegerToString(FinaticSecretVersion) + "\r\n";
+   httpHeaders += "X-Finatic-Scheme-Version: " + IntegerToString(FinaticSigningSchemeVersion) + "\r\n";
+   httpHeaders += "X-Finatic-Timestamp: " + IntegerToString((long)TimeGMT()) + "\r\n";
+   if(FinaticSignEnvelopes)
+     {
+      string signatureHex = finaticHmacSha256Hex(FinaticConnectorSecret, canonicalBody);
+      httpHeaders += "X-Finatic-Signature: " + signatureHex + "\r\n";
+     }
+
    uchar  responseData[];
    string responseHeaders;
    ResetLastError();
