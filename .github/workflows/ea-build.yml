@@ -136,12 +136,19 @@ jobs:
           $distDirectory = "$env:GITHUB_WORKSPACE\$env:DIST_DIRECTORY"
           $checksumOutputPath = "$distDirectory\checksums.sha256"
 
-          Get-ChildItem $distDirectory -File |
-            Where-Object { $_.Name -notmatch "checksums\.sha256" } |
-            ForEach-Object {
-              $fileHash = Get-FileHash $_.FullName -Algorithm SHA256
-              "$($fileHash.Hash.ToLower())  $($_.Name)"
-            } | Out-File -FilePath $checksumOutputPath -Encoding utf8
+          $checksumLines = @("FinaticMT4ConnectorEA.ex4", "FinaticMT5ConnectorEA.ex5") | ForEach-Object {
+            $publishedPath = Join-Path $distDirectory $_
+            if (-not (Test-Path $publishedPath)) {
+              throw "Missing release artifact for checksum generation: $_"
+            }
+            $fileHash = Get-FileHash $publishedPath -Algorithm SHA256
+            "$($fileHash.Hash.ToLower())  $_"
+          }
+          [System.IO.File]::WriteAllLines(
+            $checksumOutputPath,
+            $checksumLines,
+            [System.Text.UTF8Encoding]::new($false)
+          )
 
       - name: Build release notes
         shell: pwsh

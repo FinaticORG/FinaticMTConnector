@@ -1,5 +1,5 @@
 #property version   "1.00"
-#property description "Finatic MT5 Connector v0.1.0 — signed heartbeat/snapshot/events, command drain, transaction-driven incremental updates."
+#property description "Finatic MT5 Connector v0.1.4 — signed heartbeat/snapshot/events, command drain, transaction-driven incremental updates."
 
 input string FinaticPlatform = "mt5";
 input string FinaticConnectorId = "";
@@ -25,7 +25,7 @@ int OnInit()
    if(FinaticSnapshotRequired)
       finaticPushSnapshot();
    EventSetTimer(FinaticHeartbeatSeconds);
-   Print("Finatic MT5 Connector v0.1.0: timer=", FinaticHeartbeatSeconds, "s base=", g_ingestBaseUrl, " signed=", FinaticSignEnvelopes);
+   Print("Finatic MT5 Connector v0.1.4: timer=", FinaticHeartbeatSeconds, "s base=", g_ingestBaseUrl, " signed=", FinaticSignEnvelopes);
    return(INIT_SUCCEEDED);
   }
 

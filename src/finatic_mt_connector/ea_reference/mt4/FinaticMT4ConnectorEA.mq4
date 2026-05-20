@@ -1,5 +1,5 @@
 #property version   "1.00"
-#property description "Finatic MT4 Connector v0.1.0 — heartbeat, snapshot bootstrap, and account snapshot to Finatic Background."
+#property description "Finatic MT4 Connector v0.1.4 — heartbeat, snapshot bootstrap, and account snapshot to Finatic Background."
 
 input string FinaticPlatform = "mt4";
 input string FinaticConnectorId = "";
@@ -24,7 +24,7 @@ int OnInit()
    if(FinaticSnapshotRequired)
       finaticPushSnapshot();
    EventSetTimer(FinaticHeartbeatSeconds);
-   Print("Finatic MT4 Connector: timer=", FinaticHeartbeatSeconds, "s base=", g_ingestBaseUrl);
+   Print("Finatic MT4 Connector v0.1.4: timer=", FinaticHeartbeatSeconds, "s base=", g_ingestBaseUrl);
    return(INIT_SUCCEEDED);
   }
 
