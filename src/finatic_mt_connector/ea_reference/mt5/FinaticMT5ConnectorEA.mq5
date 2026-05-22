@@ -1,5 +1,5 @@
 #property version   "1.00"
-#property description "Finatic MT5 Connector v0.1.4 — signed heartbeat/snapshot/events, command drain, transaction-driven incremental updates."
+#property description "Finatic MT5 Connector v0.1.5 — signed heartbeat/snapshot/events, enriched pending orders, order.fill events."
 
 input string FinaticPlatform = "mt5";
 input string FinaticConnectorId = "";
@@ -11,6 +11,7 @@ input bool   FinaticSnapshotRequired = true;
 input int    FinaticHeartbeatSeconds = 15;
 input int    FinaticSecretVersion = 1;
 input bool   FinaticSignEnvelopes = true;
+input int    FinaticHistoryMaxRows = 1500;
 
 long   g_ingestSequence = 0;
 bool   g_ingestConfigurationValid = false;
@@ -25,7 +26,7 @@ int OnInit()
    if(FinaticSnapshotRequired)
       finaticPushSnapshot();
    EventSetTimer(FinaticHeartbeatSeconds);
-   Print("Finatic MT5 Connector v0.1.4: timer=", FinaticHeartbeatSeconds, "s base=", g_ingestBaseUrl, " signed=", FinaticSignEnvelopes);
+   Print("Finatic MT5 Connector v0.1.5: timer=", FinaticHeartbeatSeconds, "s base=", g_ingestBaseUrl, " signed=", FinaticSignEnvelopes);
    return(INIT_SUCCEEDED);
   }
 
@@ -110,6 +111,36 @@ string finaticJsonEscape(string value)
    return(out);
   }
 
+string finaticMt5OrderTypeName(long orderType)
+  {
+   if(orderType == ORDER_TYPE_BUY_LIMIT || orderType == ORDER_TYPE_SELL_LIMIT)
+      return("limit");
+   if(orderType == ORDER_TYPE_BUY_STOP || orderType == ORDER_TYPE_SELL_STOP)
+      return("stop");
+   if(orderType == ORDER_TYPE_BUY_STOP_LIMIT || orderType == ORDER_TYPE_SELL_STOP_LIMIT)
+      return("stop_limit");
+   return("market");
+  }
+
+string finaticMt5OrderSide(long orderType)
+  {
+   if(orderType == ORDER_TYPE_SELL || orderType == ORDER_TYPE_SELL_LIMIT ||
+      orderType == ORDER_TYPE_SELL_STOP || orderType == ORDER_TYPE_SELL_STOP_LIMIT)
+      return("sell");
+   return("buy");
+  }
+
+string finaticMt5OrderStateName(long orderState)
+  {
+   if(orderState == ORDER_STATE_CANCELED)
+      return("cancelled");
+   if(orderState == ORDER_STATE_PARTIAL)
+      return("partially_filled");
+   if(orderState == ORDER_STATE_FILLED)
+      return("filled");
+   return("new");
+  }
+
 string finaticBuildSnapshotInnerPayload()
   {
    string login = IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN));
@@ -162,11 +193,35 @@ string finaticBuildSnapshotInnerPayload()
          ordersJson += ",";
       string orderSymbol = finaticJsonEscape(OrderGetString(ORDER_SYMBOL));
       double orderVolume = OrderGetDouble(ORDER_VOLUME_CURRENT);
+      long orderType = (long)OrderGetInteger(ORDER_TYPE);
+      long orderState = (long)OrderGetInteger(ORDER_STATE);
+      double orderPriceOpen = OrderGetDouble(ORDER_PRICE_OPEN);
+      double stopLoss = OrderGetDouble(ORDER_SL);
+      double stopLimitPrice = OrderGetDouble(ORDER_PRICE_STOPLIMIT);
+      double limitPrice = orderPriceOpen;
+      double stopPrice = stopLoss;
+      if(orderType == ORDER_TYPE_BUY_STOP || orderType == ORDER_TYPE_SELL_STOP)
+        {
+         stopPrice = orderPriceOpen;
+         limitPrice = 0.0;
+        }
+      else if(orderType == ORDER_TYPE_BUY_STOP_LIMIT || orderType == ORDER_TYPE_SELL_STOP_LIMIT)
+        {
+         stopPrice = orderPriceOpen;
+         limitPrice = stopLimitPrice;
+        }
+      datetime setupTime = (datetime)OrderGetInteger(ORDER_TIME_SETUP);
       ordersJson +=
          "{\"order_id\":\"" + IntegerToString((long)orderTicket) +
          "\",\"symbol\":\"" + orderSymbol +
          "\",\"volume_current\":" + DoubleToString(orderVolume, 4) +
-         ",\"login\":\"" + login + "\"}";
+         ",\"order_type\":\"" + finaticMt5OrderTypeName(orderType) +
+         "\",\"side\":\"" + finaticMt5OrderSide(orderType) +
+         "\",\"status\":\"" + finaticMt5OrderStateName(orderState) +
+         "\",\"limit_price\":" + DoubleToString(limitPrice, 5) +
+         ",\"stop_price\":" + DoubleToString(stopPrice, 5) +
+         ",\"time_setup\":\"" + TimeToString(setupTime, TIME_DATE|TIME_SECONDS) +
+         "\",\"login\":\"" + login + "\"}";
      }
    ordersJson += "]";
 
@@ -181,7 +236,10 @@ string finaticBuildSnapshotInnerPayload()
 void finaticPushSnapshot()
   {
    string innerPayload = finaticBuildSnapshotInnerPayload();
-   finaticPostMinimalRoute("snapshot", innerPayload);
+   string responseBody = finaticPostMinimalRoute("snapshot", innerPayload);
+   // sync_history is enqueued on snapshot ingest; drain here (not only heartbeat).
+   if(StringLen(responseBody) > 0)
+      finaticDrainPendingCommands(responseBody);
   }
 
 string finaticBuildTransactionEventJson(const MqlTradeTransaction& trans)
@@ -191,27 +249,27 @@ string finaticBuildTransactionEventJson(const MqlTradeTransaction& trans)
      {
       string symbol = finaticJsonEscape(trans.symbol);
       return(
-         "{\"event_type\":\"fill\",\"payload\":{\"deal_id\":\"" + IntegerToString((long)trans.deal) +
+         "{\"event_type\":\"order.fill\",\"payload\":{\"deal_id\":\"" + IntegerToString((long)trans.deal) +
          "\",\"order_id\":\"" + IntegerToString((long)trans.order) +
          "\",\"symbol\":\"" + symbol +
          "\",\"volume\":" + DoubleToString(trans.volume, 4) +
          ",\"price\":" + DoubleToString(trans.price, 5) +
+         ",\"side\":\"" + finaticMt5OrderSide((long)trans.order_type) +
          ",\"login\":\"" + login + "\"}}"
       );
      }
-   string side = "buy";
-   if(trans.order_type == ORDER_TYPE_SELL || trans.order_type == ORDER_TYPE_SELL_LIMIT || trans.order_type == ORDER_TYPE_SELL_STOP)
-      side = "sell";
-   string status = "working";
+   string side = finaticMt5OrderSide((long)trans.order_type);
+   string status = "new";
    if(trans.type == TRADE_TRANSACTION_ORDER_DELETE)
-      status = "canceled";
+      status = "cancelled";
    string symbol2 = finaticJsonEscape(trans.symbol);
    return(
       "{\"event_type\":\"order.upsert\",\"payload\":{\"order_id\":\"" + IntegerToString((long)trans.order) +
       "\",\"symbol\":\"" + symbol2 +
       "\",\"side\":\"" + side +
       "\",\"status\":\"" + status +
-      "\",\"price\":" + DoubleToString(trans.price, 5) +
+      "\",\"order_type\":\"" + finaticMt5OrderTypeName((long)trans.order_type) +
+      "\",\"limit_price\":" + DoubleToString(trans.price, 5) +
       ",\"volume\":" + DoubleToString(trans.volume, 4) +
       ",\"login\":\"" + login + "\"}}"
    );
@@ -223,6 +281,203 @@ bool finaticResponseRequestsSnapshot(string responseBody)
       StringFind(responseBody, "\"should_send_snapshot\":true", 0) >= 0 ||
       StringFind(responseBody, "\"should_send_snapshot\": true", 0) >= 0
    );
+  }
+
+int finaticExtractJsonIntField(string jsonObjectText, string fieldName, int defaultValue)
+  {
+   string needle = "\"" + fieldName + "\":";
+   int needlePosition = StringFind(jsonObjectText, needle, 0);
+   if(needlePosition < 0)
+      return(defaultValue);
+   int valueStart = needlePosition + StringLen(needle);
+   string tail = StringSubstr(jsonObjectText, valueStart);
+   return((int)StringToInteger(tail));
+  }
+
+void finaticExecuteSyncHistoryCommand(string commandObject)
+  {
+   bool initialSync = (StringFind(commandObject, "\"initial\":true", 0) >= 0);
+   int maxRows = finaticExtractJsonIntField(commandObject, "max_rows", FinaticHistoryMaxRows);
+   if(maxRows < 100)
+      maxRows = 100;
+   if(maxRows > 3000)
+      maxRows = 3000;
+   int lookbackDays = finaticExtractJsonIntField(commandObject, "lookback_days", 3);
+   if(lookbackDays < 1)
+      lookbackDays = 1;
+   if(lookbackDays > 365)
+      lookbackDays = 365;
+   string historyPhase = finaticExtractJsonStringField(commandObject, "history_phase");
+   if(StringLen(historyPhase) < 1)
+      historyPhase = "deals";
+   int dealOffset = finaticExtractJsonIntField(commandObject, "deal_offset", 0);
+   int orderOffset = finaticExtractJsonIntField(commandObject, "order_offset", 0);
+   datetime toTime = TimeCurrent();
+   datetime fromTime = initialSync ? (datetime)0 : (toTime - (datetime)(lookbackDays * 86400));
+   string login = IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN));
+   string dealsJson = "[";
+   string ordersJson = "[";
+   int dealRows = 0;
+   int orderRows = 0;
+   int dealTotal = 0;
+   int orderTotal = 0;
+   datetime earliestHistoryAt = 0;
+   bool hasMoreDeals = false;
+   bool hasMoreOrders = false;
+   if(HistorySelect(fromTime, toTime))
+     {
+      dealTotal = HistoryDealsTotal();
+      orderTotal = HistoryOrdersTotal();
+      if(dealOffset == 0)
+        {
+         for(int scanIndex = 0; scanIndex < dealTotal; scanIndex++)
+           {
+            ulong scanTicket = HistoryDealGetTicket(scanIndex);
+            if(scanTicket == 0)
+               continue;
+            datetime scanTime = (datetime)HistoryDealGetInteger(scanTicket, DEAL_TIME);
+            if(earliestHistoryAt == 0 || scanTime < earliestHistoryAt)
+               earliestHistoryAt = scanTime;
+           }
+        }
+      if(initialSync && historyPhase == "deals")
+        {
+         int dealEnd = MathMin(dealTotal, dealOffset + maxRows);
+         for(int i = dealOffset; i < dealEnd; i++)
+           {
+            ulong ticket = HistoryDealGetTicket(i);
+            if(ticket == 0)
+               continue;
+            if(dealRows > 0)
+               dealsJson += ",";
+            string symbol = finaticJsonEscape(HistoryDealGetString(ticket, DEAL_SYMBOL));
+            dealsJson +=
+               "{\"deal_id\":\"" + IntegerToString((long)ticket) +
+               "\",\"order_id\":\"" + IntegerToString((long)HistoryDealGetInteger(ticket, DEAL_ORDER)) +
+               "\",\"symbol\":\"" + symbol +
+               "\",\"volume\":" + DoubleToString(HistoryDealGetDouble(ticket, DEAL_VOLUME), 4) +
+               ",\"price\":" + DoubleToString(HistoryDealGetDouble(ticket, DEAL_PRICE), 5) +
+               ",\"deal_type\":" + IntegerToString((long)HistoryDealGetInteger(ticket, DEAL_TYPE)) +
+               ",\"profit\":" + DoubleToString(HistoryDealGetDouble(ticket, DEAL_PROFIT), 2) +
+               ",\"comment\":\"" + finaticJsonEscape(HistoryDealGetString(ticket, DEAL_COMMENT)) +
+               "\",\"time\":\"" + TimeToString((datetime)HistoryDealGetInteger(ticket, DEAL_TIME), TIME_DATE|TIME_SECONDS) +
+               "\",\"login\":\"" + login + "\"}";
+            dealRows++;
+           }
+         hasMoreDeals = (dealOffset + dealRows) < dealTotal;
+        }
+      else if(initialSync && historyPhase == "orders")
+        {
+         int orderEnd = MathMin(orderTotal, orderOffset + maxRows);
+         for(int j = orderOffset; j < orderEnd; j++)
+           {
+            ulong orderTicket = HistoryOrderGetTicket(j);
+            if(orderTicket == 0)
+               continue;
+            if(orderRows > 0)
+               ordersJson += ",";
+            string orderSymbol = finaticJsonEscape(HistoryOrderGetString(orderTicket, ORDER_SYMBOL));
+            long orderType = HistoryOrderGetInteger(orderTicket, ORDER_TYPE);
+            ordersJson +=
+               "{\"order_id\":\"" + IntegerToString((long)orderTicket) +
+               "\",\"symbol\":\"" + orderSymbol +
+               "\",\"side\":\"" + finaticMt5OrderSide(orderType) +
+               "\",\"status\":\"filled\",\"order_type\":\"" + finaticMt5OrderTypeName(orderType) +
+               "\",\"limit_price\":" + DoubleToString(HistoryOrderGetDouble(orderTicket, ORDER_PRICE_OPEN), 5) +
+               ",\"volume_current\":" + DoubleToString(HistoryOrderGetDouble(orderTicket, ORDER_VOLUME_CURRENT), 4) +
+               ",\"login\":\"" + login + "\"}";
+            orderRows++;
+           }
+         hasMoreOrders = (orderOffset + orderRows) < orderTotal;
+        }
+      else if(!initialSync)
+        {
+         int dealStart = MathMax(0, dealTotal - maxRows);
+         for(int i = dealStart; i < dealTotal; i++)
+           {
+            ulong ticket = HistoryDealGetTicket(i);
+            if(ticket == 0)
+               continue;
+            if(dealRows > 0)
+               dealsJson += ",";
+            string symbol = finaticJsonEscape(HistoryDealGetString(ticket, DEAL_SYMBOL));
+            dealsJson +=
+               "{\"deal_id\":\"" + IntegerToString((long)ticket) +
+               "\",\"order_id\":\"" + IntegerToString((long)HistoryDealGetInteger(ticket, DEAL_ORDER)) +
+               "\",\"symbol\":\"" + symbol +
+               "\",\"volume\":" + DoubleToString(HistoryDealGetDouble(ticket, DEAL_VOLUME), 4) +
+               ",\"price\":" + DoubleToString(HistoryDealGetDouble(ticket, DEAL_PRICE), 5) +
+               ",\"deal_type\":" + IntegerToString((long)HistoryDealGetInteger(ticket, DEAL_TYPE)) +
+               ",\"profit\":" + DoubleToString(HistoryDealGetDouble(ticket, DEAL_PROFIT), 2) +
+               ",\"comment\":\"" + finaticJsonEscape(HistoryDealGetString(ticket, DEAL_COMMENT)) +
+               "\",\"time\":\"" + TimeToString((datetime)HistoryDealGetInteger(ticket, DEAL_TIME), TIME_DATE|TIME_SECONDS) +
+               "\",\"login\":\"" + login + "\"}";
+            dealRows++;
+           }
+         int orderStart = MathMax(0, orderTotal - maxRows);
+         for(int k = orderStart; k < orderTotal; k++)
+           {
+            ulong orderTicket = HistoryOrderGetTicket(k);
+            if(orderTicket == 0)
+               continue;
+            if(orderRows > 0)
+               ordersJson += ",";
+            string orderSymbol = finaticJsonEscape(HistoryOrderGetString(orderTicket, ORDER_SYMBOL));
+            long orderType = HistoryOrderGetInteger(orderTicket, ORDER_TYPE);
+            ordersJson +=
+               "{\"order_id\":\"" + IntegerToString((long)orderTicket) +
+               "\",\"symbol\":\"" + orderSymbol +
+               "\",\"side\":\"" + finaticMt5OrderSide(orderType) +
+               "\",\"status\":\"filled\",\"order_type\":\"" + finaticMt5OrderTypeName(orderType) +
+               "\",\"limit_price\":" + DoubleToString(HistoryOrderGetDouble(orderTicket, ORDER_PRICE_OPEN), 5) +
+               ",\"volume_current\":" + DoubleToString(HistoryOrderGetDouble(orderTicket, ORDER_VOLUME_CURRENT), 4) +
+               ",\"login\":\"" + login + "\"}";
+            orderRows++;
+           }
+        }
+     }
+   dealsJson += "]";
+   ordersJson += "]";
+   string historyPayload =
+      "{\"login\":\"" + login +
+      "\",\"initial\":" + (initialSync ? "true" : "false") +
+      ",\"from_timestamp_ms\":" + IntegerToString((long)fromTime * 1000) +
+      ",\"earliest_available_ms\":" + IntegerToString((long)earliestHistoryAt * 1000) +
+      ",\"history_phase\":\"" + historyPhase +
+      "\",\"deal_offset\":" + IntegerToString(dealOffset) +
+      ",\"deal_page_rows\":" + IntegerToString(dealRows) +
+      ",\"history_total_deals\":" + IntegerToString(dealTotal) +
+      ",\"has_more_deals\":" + (hasMoreDeals ? "true" : "false") +
+      ",\"order_offset\":" + IntegerToString(orderOffset) +
+      ",\"order_page_rows\":" + IntegerToString(orderRows) +
+      ",\"history_total_orders\":" + IntegerToString(orderTotal) +
+      ",\"has_more_orders\":" + (hasMoreOrders ? "true" : "false") +
+      ",\"pagination\":{\"phase\":\"" + historyPhase +
+      "\",\"deal_offset\":" + IntegerToString(dealOffset) +
+      ",\"deal_page_rows\":" + IntegerToString(dealRows) +
+      ",\"deal_total\":" + IntegerToString(dealTotal) +
+      ",\"has_more_deals\":" + (hasMoreDeals ? "true" : "false") +
+      ",\"order_offset\":" + IntegerToString(orderOffset) +
+      ",\"order_page_rows\":" + IntegerToString(orderRows) +
+      ",\"order_total\":" + IntegerToString(orderTotal) +
+      ",\"has_more_orders\":" + (hasMoreOrders ? "true" : "false") + "}" +
+      ",\"deals\":" + dealsJson +
+      ",\"orders\":" + ordersJson + "}";
+   string innerPayload =
+      "{\"events\":[{\"event_type\":\"history.batch\",\"payload\":{\"history\":" + historyPayload + "}}]}";
+   finaticPostMinimalRoute("events", innerPayload);
+   string commandIdentifier = finaticExtractJsonStringField(commandObject, "command_id");
+   if(StringLen(commandIdentifier) > 0)
+     {
+      string resultPayload =
+         "{\"command_id\":\"" + commandIdentifier +
+         "\",\"accepted\":true,\"ea_result\":{\"deal_rows\":" + IntegerToString(dealRows) +
+         ",\"order_rows\":" + IntegerToString(orderRows) +
+         ",\"history_phase\":\"" + historyPhase +
+         "\",\"has_more_deals\":" + (hasMoreDeals ? "true" : "false") +
+         ",\"has_more_orders\":" + (hasMoreOrders ? "true" : "false") + "}}";
+      finaticPostMinimalRoute("command-result", resultPayload);
+     }
   }
 
 void finaticDrainPendingCommands(string heartbeatResponseBody)
@@ -249,9 +504,15 @@ void finaticDrainPendingCommands(string heartbeatResponseBody)
       if(objectEnd < 0)
          break;
       string commandObject = StringSubstr(commandsBlock, objectStart, objectEnd - objectStart + 1);
-      string commandIdentifier = finaticExtractJsonStringField(commandObject, "command_id");
-      if(StringLen(commandIdentifier) > 0)
-         finaticPostCommandResult(commandIdentifier);
+      string commandKind = finaticExtractJsonStringField(commandObject, "kind");
+      if(commandKind == "sync_history")
+         finaticExecuteSyncHistoryCommand(commandObject);
+      else
+        {
+         string commandIdentifier = finaticExtractJsonStringField(commandObject, "command_id");
+         if(StringLen(commandIdentifier) > 0)
+            finaticPostCommandResult(commandIdentifier);
+        }
       commandCursor = objectEnd + 1;
      }
   }
