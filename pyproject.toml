@@ -9,11 +9,11 @@ description = "Customer-hosted MT4/MT5 connector contracts and reference impleme
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
 dependencies = [
-  "fastapi>=0.115.6",
-  "pydantic>=2.11.0",
-  "typing-extensions>=4.12.0",
-  "orjson>=3.10.0",
-  "poethepoet>=0.32.1",
+  "fastapi>=0.136.1",
+  "pydantic>=2.13.4",
+  "typing-extensions>=4.15.0",
+  "orjson>=3.11.9",
+  "poethepoet>=0.46.0",
 ]
 
 [project.optional-dependencies]
