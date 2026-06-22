@@ -7,7 +7,7 @@
 - `FinaticBackground`: `uv run pytest tests/unit/test_mt_ingestion.py tests/integration/test_mt_webhook_e2e.py` → **21 passed** (as of audit write).
 - `finaticAPI`: `uv run pytest tests/unit/routers/mt_connectors/ tests/unit/test_mt_connector_service.py` → **12 passed** (2026-05-15).
 - `FinaticConnect`: `yarn vitest run src/features/mt-connect/MTConnectScreen.test.tsx` → **3 passed**.
-- `FinaticBrokerFactoryPKG` (MT4/MT5 slice): `uv run pytest tests/unit/brokers/mt5/test_mt5_mapping_and_stream_adapter.py tests/unit/brokers/mt4/test_mt4_mapping_and_stream_adapter.py` → **16 passed** (2026-05-15; includes `command_result` adapter mapping).
+- `FinaticCore` (MT4/MT5 slice): `uv run pytest tests/unit/brokers/mt5/test_mt5_mapping_and_stream_adapter.py tests/unit/brokers/mt4/test_mt4_mapping_and_stream_adapter.py` → **16 passed** (2026-05-15; includes `command_result` adapter mapping).
 - `FinaticBackground` (MT command queue + command_result store): `uv run pytest tests/unit/test_mt_command_queue.py tests/unit/test_mt_command_result_store.py` → **4 passed** (2026-05-15).
 
 ---
@@ -48,7 +48,7 @@
 
 ---
 
-## 3. Normalization (`FinaticBrokerFactoryPKG`)
+## 3. Normalization (`FinaticCore`)
 
 | Plan id | Evidence | Status |
 |--------|----------|--------|

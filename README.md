@@ -12,7 +12,7 @@ Customer-hosted MetaTrader 4 and 5 connector — protocol contracts, signing rul
 | MT4/MT5 EA **reference** source (`.mq4` / `.mq5`) | Customer connector secrets in git |
 | Python helpers and tests for protocol compliance | Unsolicited community feature development |
 
-Integrators run the **compiled EA** on their own terminal. Finatic operates ingest (`FinaticBackground`) and broker data projection (`FinaticBrokerFactoryPKG`) in separate private repositories.
+Integrators run the **compiled EA** on their own terminal. Finatic operates ingest (`FinaticBackground`) and broker data projection (`FinaticCore`) in separate private repositories.
 
 ## Who should use what
 
@@ -63,7 +63,7 @@ Requires MetaEditor for MT4 and MT5, plus `gh auth login` when publishing. Non-d
 
 - [finaticAPI](https://github.com/FinaticORG/finaticAPI) — connect flow and connector registration
 - [FinaticBackground](https://github.com/FinaticORG/FinaticBackground) — push ingest webhooks and scheduling
-- [FinaticBrokerFactoryPKG](https://github.com/FinaticORG/FinaticBrokerFactoryPKG) — broker data persistence for MT stream events
+- [FinaticCore](https://github.com/FinaticORG/FinaticCore) — broker data persistence for MT stream events
 
 ## License
 

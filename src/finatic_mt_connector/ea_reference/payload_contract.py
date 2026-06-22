@@ -1,6 +1,6 @@
 """Canonical MT connector payload field names for EAs and integration tests.
 
-These shapes align with FinaticBrokerFactoryPKG stream adapters and
+These shapes align with FinaticCore stream adapters and
 ``mt_stream_broker_data_persistence``. Deployed Background webhooks expect
 ``event_type`` and MT fields at the top level of ``payload`` (not nested under
 ``events[]``). Reference signed envelopes may batch records; flatten before
