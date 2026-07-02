@@ -36,7 +36,9 @@ def _default_account_row(
 def default_snapshot_payload() -> dict[str, Any]:
     """Minimal snapshot bootstrap shape including accounts for persistence."""
     return {
-        "accounts": [_default_account_row(login="1001", currency="USD", balance=10_000.0)],
+        "accounts": [
+            _default_account_row(login="1001", currency="USD", balance=10_000.0)
+        ],
         "positions": [],
         "orders": [],
         "balances": [],
@@ -47,7 +49,9 @@ def multi_account_snapshot_payload() -> dict[str, Any]:
     """Snapshot with two trading accounts under one broker connection."""
     return {
         "accounts": [
-            _default_account_row(login="1001", currency="USD", balance=10_000.0),
+            _default_account_row(
+                login="1001", currency="USD", balance=10_000.0
+            ),
             _default_account_row(login="2002", currency="EUR", balance=5_000.0),
         ],
         "positions": [],

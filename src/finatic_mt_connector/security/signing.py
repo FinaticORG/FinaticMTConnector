@@ -95,7 +95,9 @@ def parse_rfc3339_timestamp_or_raise(timestamp_header_raw: str) -> datetime:
     return normalized_timestamp.astimezone(UTC)
 
 
-def parse_epoch_seconds_timestamp_or_raise(timestamp_header_raw: str) -> datetime:
+def parse_epoch_seconds_timestamp_or_raise(
+    timestamp_header_raw: str,
+) -> datetime:
     sanitized_token = timestamp_header_raw.strip()
     if not sanitized_token:
         raise ValueError("empty timestamp")
@@ -103,7 +105,9 @@ def parse_epoch_seconds_timestamp_or_raise(timestamp_header_raw: str) -> datetim
     return datetime.fromtimestamp(epoch_seconds, tz=UTC)
 
 
-def parse_finatic_timestamp_header_or_raise(timestamp_header_raw: str) -> datetime:
+def parse_finatic_timestamp_header_or_raise(
+    timestamp_header_raw: str,
+) -> datetime:
     """Accept RFC3339 or Unix-epoch seconds from ``X-Finatic-Timestamp``."""
     sanitized_token = timestamp_header_raw.strip()
     if not sanitized_token:
