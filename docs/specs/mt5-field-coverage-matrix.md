@@ -1,6 +1,6 @@
-# MT5 → `broker_data` field coverage matrix
+# MT5 → `integration.*` field coverage matrix
 
-| Domain | Source (MT5 EA payload) | Target (`broker_data`) | Status |
+| Domain | Source (MT5 EA payload) | Target (`integration.*`) | Status |
 |---|---|---|---|
 | account.login | `accounts[].login` | `accounts.broker_provided_account_id` | covered |
 | account.balance | `accounts[].balance` | `balances.balance` (latest row) | covered |

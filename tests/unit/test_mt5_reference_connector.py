@@ -108,3 +108,41 @@ def test_push_minimal_heartbeat_posts_deployed_webhook_shape() -> None:
         f"/v1/mt/connectors/{connector.connector_configuration.connector_id}/heartbeat"
     )
     assert connector._minimal_webhook_sequence == 1
+
+
+def test_push_minimal_signed_snapshot_sends_hmac_headers() -> None:
+    from finatic_mt_connector.ea_reference.payload_contract import (
+        multi_account_snapshot_payload,
+    )
+    from finatic_mt_connector.security.signing import verify_payload_signature
+
+    connector = _build_connector()
+    mock_http_response = MagicMock()
+    mock_http_response.status = 200
+    mock_http_response.read.return_value = b"{}"
+    mock_context = MagicMock()
+    mock_context.__enter__.return_value = mock_http_response
+    mock_context.__exit__.return_value = None
+
+    with patch(
+        "finatic_mt_connector.ea_reference.reference_connector_base.request.urlopen",
+        return_value=mock_context,
+    ) as mock_urlopen:
+        transport_response = connector.push_minimal_signed_snapshot(
+            multi_account_snapshot_payload()
+        )
+
+    assert transport_response.status_code == 200
+    posted_request = mock_urlopen.call_args[0][0]
+    signature_header = posted_request.get_header("X-finatic-signature")
+    assert signature_header
+    posted_body = posted_request.data.decode("utf-8")
+    import json
+
+    signable_body = json.loads(posted_body)
+    assert len(signable_body["payload"]["accounts"]) == 2
+    assert verify_payload_signature(
+        secret_value=connector.connector_configuration.connector_secret,
+        raw_payload=signable_body,
+        signature_value=signature_header,
+    )

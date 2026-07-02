@@ -44,7 +44,7 @@
 
 | Plan id | Gap | Status |
 |--------|-----|--------|
-| `p1-5-projector-persistence-integration` | **Done (push path):** `webhook_routes.py` calls `persist_mt_stream_event_to_broker_data` for `mt4`/`mt5` and does **not** enqueue `StreamProjector`. Polling worker skips `mt4`/`mt5` (`SKIPPED:POLL_SYNC_MT_PUSH_INGRESS`). Broker `get_*` raises push-only `NotImplementedError`. | **Done (push-only)** |
+| `p1-5-projector-persistence-integration` | **Done (push path):** `webhook_routes.py` calls `broker.persist_stream_event` → `persist_mt_push_stream_event` for `mt4`/`mt5` (writes `integration.*` / sandbox). Does **not** enqueue `StreamProjector`. Polling worker skips `mt4`/`mt5` (`SKIPPED:POLL_SYNC_MT_PUSH_INGRESS`). Broker `get_*` raises push-only `NotImplementedError`. | **Done (push-only → integration)** |
 
 ---
 
@@ -101,7 +101,7 @@ Phase **1.6** OSS baseline docs + EA hardening: **Open** (see plan todos `p1-6-*
 
 1. **Fix MT5 fetcher for webhook** (`push_mode == "webhook"`) — **done** via `mt_common/snapshot_schedule.py`; next: wire `snapshot_request_enqueued` into polling supervisor → `snapshot_due_at` / EA responses.
 2. **Wire executor** to Redis `MTCommandQueueService` / ingress `pending_commands` (same semantics as Background responses). — **Enqueue path done** from BrokerFactory when `redis_client` + `connector_id`; **await `command_result`** still Phase 1.5.
-3. **Persistence:** extend projector or add MT-specific projection consumer so snapshot/events materialize **broker_data** tables per `p1-5-projector-persistence-integration`.
+3. **Persistence:** MT push ingress materializes **`integration.*`** (or sandbox) via `persist_mt_push_stream_event` — no `broker_data` writes from MT ingress (`p1-5-projector-persistence-integration` **done**).
 4. **Portal parity + uniqueness** (`p1-5-portal-status-parity`, `p1-5-uniqueness-constraints`).
 5. **Phase 1.6** EA + docs baselines + Gate B2.
 
