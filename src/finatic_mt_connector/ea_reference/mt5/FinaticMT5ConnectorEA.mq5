@@ -606,6 +606,34 @@ ENUM_ORDER_TYPE finaticResolveMt5PendingOrderType(string actionValue, string ord
    return(isBuy ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP);
   }
 
+ENUM_ORDER_TYPE_FILLING finaticResolveMt5FillingMode(string symbolValue)
+  {
+   // Unset / RETURN filling under Market Execution yields retcode 10030
+   // ("Unsupported filling mode"). Pick a mode advertised on the symbol.
+   long fillingMode = SymbolInfoInteger(symbolValue, SYMBOL_FILLING_MODE);
+   if((fillingMode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+      return(ORDER_FILLING_IOC);
+   if((fillingMode & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      return(ORDER_FILLING_FOK);
+   // RETURN is always available except under SYMBOL_TRADE_EXECUTION_MARKET.
+   if(SymbolInfoInteger(symbolValue, SYMBOL_TRADE_EXEMODE) != SYMBOL_TRADE_EXECUTION_MARKET)
+      return(ORDER_FILLING_RETURN);
+   return(ORDER_FILLING_IOC);
+  }
+
+double finaticNormalizeMt5Price(string symbolValue, double rawPrice)
+  {
+   if(rawPrice <= 0.0)
+      return(rawPrice);
+   double tickSize = SymbolInfoDouble(symbolValue, SYMBOL_TRADE_TICK_SIZE);
+   if(tickSize > 0.0)
+     {
+      double ticks = MathRound(rawPrice / tickSize);
+      return(NormalizeDouble(ticks * tickSize, (int)SymbolInfoInteger(symbolValue, SYMBOL_DIGITS)));
+     }
+   return(NormalizeDouble(rawPrice, (int)SymbolInfoInteger(symbolValue, SYMBOL_DIGITS)));
+  }
+
 void finaticExecutePlaceOrderCommand(string commandObject)
   {
    string commandIdentifier = finaticExtractJsonStringField(commandObject, "command_id");
@@ -644,8 +672,9 @@ void finaticExecutePlaceOrderCommand(string commandObject)
    tradeRequest.volume = volumeLots;
    tradeRequest.deviation = 20;
    tradeRequest.magic = FINATIC_EA_MAGIC;
-   tradeRequest.sl = stopLossPrice;
-   tradeRequest.tp = takeProfitPrice;
+   tradeRequest.sl = finaticNormalizeMt5Price(symbolValue, stopLossPrice);
+   tradeRequest.tp = finaticNormalizeMt5Price(symbolValue, takeProfitPrice);
+   tradeRequest.type_filling = finaticResolveMt5FillingMode(symbolValue);
 
    if(orderTypeValue == "market")
      {
@@ -654,12 +683,16 @@ void finaticExecutePlaceOrderCommand(string commandObject)
       tradeRequest.price = (actionValue == "buy")
          ? SymbolInfoDouble(symbolValue, SYMBOL_ASK)
          : SymbolInfoDouble(symbolValue, SYMBOL_BID);
+      tradeRequest.price = finaticNormalizeMt5Price(symbolValue, tradeRequest.price);
      }
    else if(orderTypeValue == "limit" || orderTypeValue == "stop")
      {
       tradeRequest.action = TRADE_ACTION_PENDING;
       tradeRequest.type = finaticResolveMt5PendingOrderType(actionValue, orderTypeValue);
-      tradeRequest.price = (orderTypeValue == "limit") ? limitPrice : stopEntryPrice;
+      tradeRequest.price = finaticNormalizeMt5Price(
+         symbolValue,
+         (orderTypeValue == "limit") ? limitPrice : stopEntryPrice
+      );
       if(tradeRequest.price <= 0.0)
         {
          finaticPostCommandResultDetailed(commandIdentifier, false, 0, 0, "pending price required");

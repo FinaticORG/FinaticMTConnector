@@ -164,6 +164,17 @@ bool finaticIsMarketPositionOrderType(int orderType)
    return(orderType == OP_BUY || orderType == OP_SELL);
   }
 
+bool finaticIsTradeHistoryOrderType(int orderType)
+  {
+   // OP_BALANCE / OP_CREDIT have empty OrderSymbol() and are not trade orders.
+   return(orderType == OP_BUY
+       || orderType == OP_SELL
+       || orderType == OP_BUYLIMIT
+       || orderType == OP_SELLLIMIT
+       || orderType == OP_BUYSTOP
+       || orderType == OP_SELLSTOP);
+  }
+
 string finaticMt4OrderTypeName(int orderType)
   {
    if(orderType == OP_BUYLIMIT || orderType == OP_SELLLIMIT)
@@ -381,10 +392,14 @@ void finaticExecuteSyncHistoryCommand(string commandObject)
         {
          if(!OrderSelect(j, SELECT_BY_POS, MODE_HISTORY))
             continue;
+         orderType = OrderType();
+         if(!finaticIsTradeHistoryOrderType(orderType))
+            continue;
+         orderSymbol = finaticJsonEscape(OrderSymbol());
+         if(StringLen(orderSymbol) < 1)
+            continue;
          if(orderRows > 0)
             ordersJson += ",";
-         orderSymbol = finaticJsonEscape(OrderSymbol());
-         orderType = OrderType();
          ordersJson +=
             "{\"order_id\":\"" + IntegerToString(OrderTicket()) +
             "\",\"symbol\":\"" + orderSymbol +
@@ -393,9 +408,12 @@ void finaticExecuteSyncHistoryCommand(string commandObject)
             "\",\"volume\":" + DoubleToString(OrderLots(), 4) +
             ",\"close_price\":" + DoubleToString(OrderClosePrice(), 5) +
             ",\"profit\":" + DoubleToString(OrderProfit(), 2) +
-            ",\"comment\":\"" + finaticJsonEscape(OrderComment()) +
-            ",\"close_time\":\"" + TimeToString(OrderCloseTime(), TIME_DATE|TIME_SECONDS) +
-            "\",\"login\":\"" + login + "\"}";
+            // comment MUST close its quote before the next key or /events 422s
+            // (orjson \"Extra data\") and transactions_synced_at never stamps → Syncing forever.
+            ",\"comment\":\"" + finaticJsonEscape(OrderComment()) + "\"" +
+            ",\"open_time\":\"" + TimeToString(OrderOpenTime(), TIME_DATE|TIME_SECONDS) + "\"" +
+            ",\"close_time\":\"" + TimeToString(OrderCloseTime(), TIME_DATE|TIME_SECONDS) + "\"" +
+            ",\"login\":\"" + login + "\"}";
          orderRows++;
         }
       hasMoreOrders = (orderOffset + orderRows) < historyTotal;
@@ -409,10 +427,14 @@ void finaticExecuteSyncHistoryCommand(string commandObject)
             continue;
          if(OrderCloseTime() < fromTime && OrderOpenTime() < fromTime)
             continue;
+         orderType = OrderType();
+         if(!finaticIsTradeHistoryOrderType(orderType))
+            continue;
+         orderSymbol = finaticJsonEscape(OrderSymbol());
+         if(StringLen(orderSymbol) < 1)
+            continue;
          if(orderRows > 0)
             ordersJson += ",";
-         orderSymbol = finaticJsonEscape(OrderSymbol());
-         orderType = OrderType();
          ordersJson +=
             "{\"order_id\":\"" + IntegerToString(OrderTicket()) +
             "\",\"symbol\":\"" + orderSymbol +
@@ -421,9 +443,10 @@ void finaticExecuteSyncHistoryCommand(string commandObject)
             "\",\"volume\":" + DoubleToString(OrderLots(), 4) +
             ",\"close_price\":" + DoubleToString(OrderClosePrice(), 5) +
             ",\"profit\":" + DoubleToString(OrderProfit(), 2) +
-            ",\"comment\":\"" + finaticJsonEscape(OrderComment()) +
-            ",\"close_time\":\"" + TimeToString(OrderCloseTime(), TIME_DATE|TIME_SECONDS) +
-            "\",\"login\":\"" + login + "\"}";
+            ",\"comment\":\"" + finaticJsonEscape(OrderComment()) + "\"" +
+            ",\"open_time\":\"" + TimeToString(OrderOpenTime(), TIME_DATE|TIME_SECONDS) + "\"" +
+            ",\"close_time\":\"" + TimeToString(OrderCloseTime(), TIME_DATE|TIME_SECONDS) + "\"" +
+            ",\"login\":\"" + login + "\"}";
          orderRows++;
         }
      }
