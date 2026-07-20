@@ -69,3 +69,54 @@ def build_signing_headers(
         x_finatic_sequence=payload_sequence,
         x_finatic_timestamp=payload_timestamp,
     )
+
+
+def extract_signable_body_dictionary(
+    *,
+    sequence: int,
+    secret_version: int,
+    platform: str,
+    payload: dict[str, Any],
+) -> dict[str, Any]:
+    """Canonical JSON-compatible dict for EA + Python signing parity."""
+    return {
+        "payload": payload,
+        "platform": platform,
+        "secret_version": secret_version,
+        "sequence": sequence,
+    }
+
+
+def parse_rfc3339_timestamp_or_raise(timestamp_header_raw: str) -> datetime:
+    sanitized_token = timestamp_header_raw.strip().replace("Z", "+00:00")
+    normalized_timestamp = datetime.fromisoformat(sanitized_token)
+    if normalized_timestamp.tzinfo is None:
+        return normalized_timestamp.replace(tzinfo=UTC)
+    return normalized_timestamp.astimezone(UTC)
+
+
+def parse_epoch_seconds_timestamp_or_raise(
+    timestamp_header_raw: str,
+) -> datetime:
+    sanitized_token = timestamp_header_raw.strip()
+    if not sanitized_token:
+        raise ValueError("empty timestamp")
+    epoch_seconds = float(sanitized_token)
+    return datetime.fromtimestamp(epoch_seconds, tz=UTC)
+
+
+def parse_finatic_timestamp_header_or_raise(
+    timestamp_header_raw: str,
+) -> datetime:
+    """Accept RFC3339 or Unix-epoch seconds from ``X-Finatic-Timestamp``."""
+    sanitized_token = timestamp_header_raw.strip()
+    if not sanitized_token:
+        raise ValueError("empty timestamp")
+
+    if sanitized_token.isdigit() or (
+        sanitized_token.replace(".", "", 1).isdigit()
+        and sanitized_token.count(".") <= 1
+    ):
+        return parse_epoch_seconds_timestamp_or_raise(sanitized_token)
+
+    return parse_rfc3339_timestamp_or_raise(sanitized_token)

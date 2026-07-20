@@ -4,7 +4,7 @@ This runbook captures the Phase 3 DRY/observability audit for MT connector work 
 
 - `FinaticMTConnector`
 - `FinaticBackground`
-- `FinaticBrokerFactoryPKG`
+- `FinaticCore`
 - `finaticAPI` (control-plane verification pass)
 
 ## Audit Date

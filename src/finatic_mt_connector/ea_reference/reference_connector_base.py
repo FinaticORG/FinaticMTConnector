@@ -23,7 +23,10 @@ from urllib.error import HTTPError
 from uuid import UUID, uuid4
 
 from finatic_mt_connector.contracts.envelope import EnvelopeKind
-from finatic_mt_connector.security.signing import build_signing_headers
+from finatic_mt_connector.security.signing import (
+    build_signing_headers,
+    extract_signable_body_dictionary,
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -127,28 +130,58 @@ class BaseReferenceConnector:
             f"/{route_suffix.lstrip('/')}"
         )
 
+    def _build_minimal_ingress_body(
+        self,
+        *,
+        payload: dict[str, Any],
+        sequence: int | None = None,
+    ) -> dict[str, Any]:
+        connector_configuration = self.connector_configuration
+        sequence_index = (
+            self._minimal_webhook_sequence if sequence is None else sequence
+        )
+        return extract_signable_body_dictionary(
+            sequence=sequence_index,
+            secret_version=connector_configuration.secret_version,
+            platform=connector_configuration.platform,
+            payload=payload,
+        )
+
     def push_minimal_webhook(
         self,
         *,
         route_suffix: str,
         payload: dict[str, Any],
+        sign_request: bool = False,
     ) -> ReferenceTransportResponse:
         """POST minimal ``MTIngressRequestBody`` JSON to a deployed Background route."""
         connector_configuration = self.connector_configuration
         sequence_index = self._minimal_webhook_sequence
-        minimal_body = {
-            "sequence": sequence_index,
-            "secret_version": connector_configuration.secret_version,
-            "platform": connector_configuration.platform,
-            "payload": payload,
-        }
+        minimal_body = self._build_minimal_ingress_body(
+            payload=payload,
+            sequence=sequence_index,
+        )
         request_body = json.dumps(minimal_body, separators=(",", ":")).encode(
             "utf-8"
         )
+        request_headers = {"Content-Type": "application/json"}
+        if sign_request:
+            signing_headers = build_signing_headers(
+                secret_value=connector_configuration.connector_secret,
+                raw_payload=minimal_body,
+            )
+            request_headers.update(
+                {
+                    "X-Finatic-Sigver": signing_headers.x_finatic_sigver,
+                    "X-Finatic-Signature": signing_headers.x_finatic_signature,
+                    "X-Finatic-Sequence": signing_headers.x_finatic_sequence,
+                    "X-Finatic-Timestamp": signing_headers.x_finatic_timestamp,
+                }
+            )
         http_request = request.Request(
             self._minimal_webhook_url(route_suffix),
             data=request_body,
-            headers={"Content-Type": "application/json"},
+            headers=request_headers,
             method="POST",
         )
         try:
@@ -168,6 +201,16 @@ class BaseReferenceConnector:
             self._minimal_webhook_sequence = sequence_index + 1
         return ReferenceTransportResponse(
             status_code=response_status, body_text=response_text
+        )
+
+    def push_minimal_signed_snapshot(
+        self, snapshot_payload: dict[str, Any]
+    ) -> ReferenceTransportResponse:
+        """POST signed snapshot bootstrap compatible with deployed Background ingress."""
+        return self.push_minimal_webhook(
+            route_suffix="snapshot",
+            payload=snapshot_payload,
+            sign_request=True,
         )
 
     def push_minimal_heartbeat(self) -> ReferenceTransportResponse:

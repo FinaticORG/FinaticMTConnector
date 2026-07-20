@@ -7,7 +7,7 @@
 - `FinaticBackground`: `uv run pytest tests/unit/test_mt_ingestion.py tests/integration/test_mt_webhook_e2e.py` → **21 passed** (as of audit write).
 - `finaticAPI`: `uv run pytest tests/unit/routers/mt_connectors/ tests/unit/test_mt_connector_service.py` → **12 passed** (2026-05-15).
 - `FinaticConnect`: `yarn vitest run src/features/mt-connect/MTConnectScreen.test.tsx` → **3 passed**.
-- `FinaticBrokerFactoryPKG` (MT4/MT5 slice): `uv run pytest tests/unit/brokers/mt5/test_mt5_mapping_and_stream_adapter.py tests/unit/brokers/mt4/test_mt4_mapping_and_stream_adapter.py` → **16 passed** (2026-05-15; includes `command_result` adapter mapping).
+- `FinaticCore` (MT4/MT5 slice): `uv run pytest tests/unit/brokers/mt5/test_mt5_mapping_and_stream_adapter.py tests/unit/brokers/mt4/test_mt4_mapping_and_stream_adapter.py` → **16 passed** (2026-05-15; includes `command_result` adapter mapping).
 - `FinaticBackground` (MT command queue + command_result store): `uv run pytest tests/unit/test_mt_command_queue.py tests/unit/test_mt_command_result_store.py` → **4 passed** (2026-05-15).
 
 ---
@@ -44,11 +44,11 @@
 
 | Plan id | Gap | Status |
 |--------|-----|--------|
-| `p1-5-projector-persistence-integration` | **Done (push path):** `webhook_routes.py` calls `persist_mt_stream_event_to_broker_data` for `mt4`/`mt5` and does **not** enqueue `StreamProjector`. Polling worker skips `mt4`/`mt5` (`SKIPPED:POLL_SYNC_MT_PUSH_INGRESS`). Broker `get_*` raises push-only `NotImplementedError`. | **Done (push-only)** |
+| `p1-5-projector-persistence-integration` | **Done (push path):** `webhook_routes.py` calls `broker.persist_stream_event` → `persist_mt_push_stream_event` for `mt4`/`mt5` (writes `integration.*` / sandbox). Does **not** enqueue `StreamProjector`. Polling worker skips `mt4`/`mt5` (`SKIPPED:POLL_SYNC_MT_PUSH_INGRESS`). Broker `get_*` raises push-only `NotImplementedError`. | **Done (push-only → integration)** |
 
 ---
 
-## 3. Normalization (`FinaticBrokerFactoryPKG`)
+## 3. Normalization (`FinaticCore`)
 
 | Plan id | Evidence | Status |
 |--------|----------|--------|
@@ -101,7 +101,7 @@ Phase **1.6** OSS baseline docs + EA hardening: **Open** (see plan todos `p1-6-*
 
 1. **Fix MT5 fetcher for webhook** (`push_mode == "webhook"`) — **done** via `mt_common/snapshot_schedule.py`; next: wire `snapshot_request_enqueued` into polling supervisor → `snapshot_due_at` / EA responses.
 2. **Wire executor** to Redis `MTCommandQueueService` / ingress `pending_commands` (same semantics as Background responses). — **Enqueue path done** from BrokerFactory when `redis_client` + `connector_id`; **await `command_result`** still Phase 1.5.
-3. **Persistence:** extend projector or add MT-specific projection consumer so snapshot/events materialize **broker_data** tables per `p1-5-projector-persistence-integration`.
+3. **Persistence:** MT push ingress materializes **`integration.*`** (or sandbox) via `persist_mt_push_stream_event` — no `broker_data` writes from MT ingress (`p1-5-projector-persistence-integration` **done**).
 4. **Portal parity + uniqueness** (`p1-5-portal-status-parity`, `p1-5-uniqueness-constraints`).
 5. **Phase 1.6** EA + docs baselines + Gate B2.
 

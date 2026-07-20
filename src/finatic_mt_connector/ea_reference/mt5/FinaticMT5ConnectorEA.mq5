@@ -1,5 +1,5 @@
-#property version   "1.00"
-#property description "Finatic MT5 Connector v0.1.5 — signed heartbeat/snapshot/events, enriched pending orders, order.fill events."
+#property version   "1.01"
+#property description "Finatic MT5 Connector v0.1.6 — place/modify/cancel trading, Mode A/C SL/TP, signed ingest."
 
 input string FinaticPlatform = "mt5";
 input string FinaticConnectorId = "";
@@ -170,6 +170,8 @@ string finaticBuildSnapshotInnerPayload()
       string symbol = finaticJsonEscape(PositionGetString(POSITION_SYMBOL));
       double volume = PositionGetDouble(POSITION_VOLUME);
       double priceOpen = PositionGetDouble(POSITION_PRICE_OPEN);
+      double stopLoss = PositionGetDouble(POSITION_SL);
+      double takeProfit = PositionGetDouble(POSITION_TP);
       long sideType = (long)PositionGetInteger(POSITION_TYPE);
       string side = (sideType == POSITION_TYPE_SELL) ? "sell" : "buy";
       positionsJson +=
@@ -177,6 +179,8 @@ string finaticBuildSnapshotInnerPayload()
          "\",\"symbol\":\"" + symbol +
          "\",\"volume\":" + DoubleToString(volume, 4) +
          ",\"price_open\":" + DoubleToString(priceOpen, 5) +
+         ",\"stop_loss\":" + DoubleToString(stopLoss, 5) +
+         ",\"take_profit\":" + DoubleToString(takeProfit, 5) +
          ",\"side\":\"" + side +
          "\",\"login\":\"" + login + "\"}";
      }
@@ -480,6 +484,406 @@ void finaticExecuteSyncHistoryCommand(string commandObject)
      }
   }
 
+#define FINATIC_EA_MAGIC 26071201
+
+string finaticExtractBalancedJsonObject(string text, int startPosition)
+  {
+   if(startPosition < 0 || startPosition >= StringLen(text))
+      return("");
+   if(StringGetCharacter(text, startPosition) != '{')
+      return("");
+   int depth = 0;
+   bool inString = false;
+   for(int index = startPosition; index < StringLen(text); index++)
+     {
+      ushort character = StringGetCharacter(text, index);
+      if(character == '\\' && inString)
+        {
+         index++;
+         continue;
+        }
+      if(character == '"')
+        {
+         inString = !inString;
+         continue;
+        }
+      if(inString)
+         continue;
+      if(character == '{')
+         depth++;
+      else if(character == '}')
+        {
+         depth--;
+         if(depth == 0)
+            return(StringSubstr(text, startPosition, index - startPosition + 1));
+        }
+     }
+   return("");
+  }
+
+string finaticExtractJsonObjectField(string jsonObjectText, string fieldName)
+  {
+   string needle = "\"" + fieldName + "\"";
+   int needlePosition = StringFind(jsonObjectText, needle, 0);
+   if(needlePosition < 0)
+      return("");
+   int colonPosition = StringFind(jsonObjectText, ":", needlePosition + StringLen(needle));
+   if(colonPosition < 0)
+      return("");
+   int objectStart = StringFind(jsonObjectText, "{", colonPosition);
+   if(objectStart < 0)
+      return("");
+   return(finaticExtractBalancedJsonObject(jsonObjectText, objectStart));
+  }
+
+double finaticExtractJsonDoubleField(string jsonObjectText, string fieldName, double defaultValue)
+  {
+   string needle = "\"" + fieldName + "\":";
+   int needlePosition = StringFind(jsonObjectText, needle, 0);
+   if(needlePosition < 0)
+      return(defaultValue);
+   int valueStart = needlePosition + StringLen(needle);
+   while(valueStart < StringLen(jsonObjectText))
+     {
+      ushort character = StringGetCharacter(jsonObjectText, valueStart);
+      if(character == ' ' || character == '\t' || character == '\r' || character == '\n')
+        {
+         valueStart++;
+         continue;
+        }
+      break;
+     }
+   string tail = StringSubstr(jsonObjectText, valueStart);
+   return(StringToDouble(tail));
+  }
+
+bool finaticExtractJsonBoolField(string jsonObjectText, string fieldName, bool defaultValue)
+  {
+   string needle = "\"" + fieldName + "\":";
+   int needlePosition = StringFind(jsonObjectText, needle, 0);
+   if(needlePosition < 0)
+      return(defaultValue);
+   int valueStart = needlePosition + StringLen(needle);
+   string tail = StringSubstr(jsonObjectText, valueStart);
+   StringTrimLeft(tail);
+   if(StringFind(tail, "true", 0) == 0)
+      return(true);
+   if(StringFind(tail, "false", 0) == 0)
+      return(false);
+   return(defaultValue);
+  }
+
+void finaticPostCommandResultDetailed(
+   string commandIdentifier,
+   bool accepted,
+   long ticket,
+   uint retcode,
+   string commentText
+  )
+  {
+   string escapedComment = finaticJsonEscape(commentText);
+   string eaResult =
+      "{\"received_at_ms\":" + IntegerToString((long)GetTickCount()) +
+      ",\"retcode\":" + IntegerToString((long)retcode) +
+      ",\"comment\":\"" + escapedComment + "\"";
+   if(ticket > 0)
+      eaResult += ",\"ticket\":" + IntegerToString(ticket) +
+                  ",\"order_id\":\"" + IntegerToString(ticket) + "\"";
+   eaResult += "}";
+   string acceptedLiteral = accepted ? "true" : "false";
+   string innerPayload =
+      "{\"command_id\":\"" + commandIdentifier +
+      "\",\"accepted\":" + acceptedLiteral +
+      ",\"ea_result\":" + eaResult + "}";
+   finaticPostMinimalRoute("command-result", innerPayload);
+  }
+
+ENUM_ORDER_TYPE finaticResolveMt5PendingOrderType(string actionValue, string orderTypeValue)
+  {
+   bool isBuy = (actionValue == "buy");
+   if(orderTypeValue == "limit")
+      return(isBuy ? ORDER_TYPE_BUY_LIMIT : ORDER_TYPE_SELL_LIMIT);
+   return(isBuy ? ORDER_TYPE_BUY_STOP : ORDER_TYPE_SELL_STOP);
+  }
+
+ENUM_ORDER_TYPE_FILLING finaticResolveMt5FillingMode(string symbolValue)
+  {
+   // Unset / RETURN filling under Market Execution yields retcode 10030
+   // ("Unsupported filling mode"). Pick a mode advertised on the symbol.
+   long fillingMode = SymbolInfoInteger(symbolValue, SYMBOL_FILLING_MODE);
+   if((fillingMode & SYMBOL_FILLING_IOC) == SYMBOL_FILLING_IOC)
+      return(ORDER_FILLING_IOC);
+   if((fillingMode & SYMBOL_FILLING_FOK) == SYMBOL_FILLING_FOK)
+      return(ORDER_FILLING_FOK);
+   // RETURN is always available except under SYMBOL_TRADE_EXECUTION_MARKET.
+   if(SymbolInfoInteger(symbolValue, SYMBOL_TRADE_EXEMODE) != SYMBOL_TRADE_EXECUTION_MARKET)
+      return(ORDER_FILLING_RETURN);
+   return(ORDER_FILLING_IOC);
+  }
+
+double finaticNormalizeMt5Price(string symbolValue, double rawPrice)
+  {
+   if(rawPrice <= 0.0)
+      return(rawPrice);
+   double tickSize = SymbolInfoDouble(symbolValue, SYMBOL_TRADE_TICK_SIZE);
+   if(tickSize > 0.0)
+     {
+      double ticks = MathRound(rawPrice / tickSize);
+      return(NormalizeDouble(ticks * tickSize, (int)SymbolInfoInteger(symbolValue, SYMBOL_DIGITS)));
+     }
+   return(NormalizeDouble(rawPrice, (int)SymbolInfoInteger(symbolValue, SYMBOL_DIGITS)));
+  }
+
+void finaticExecutePlaceOrderCommand(string commandObject)
+  {
+   string commandIdentifier = finaticExtractJsonStringField(commandObject, "command_id");
+   string payloadObject = finaticExtractJsonObjectField(commandObject, "payload");
+   if(StringLen(commandIdentifier) < 1 || StringLen(payloadObject) < 2)
+     {
+      finaticPostCommandResultDetailed(commandIdentifier, false, 0, 0, "missing command_id or payload");
+      return;
+     }
+
+   string symbolValue = finaticExtractJsonStringField(payloadObject, "symbol");
+   string actionValue = finaticExtractJsonStringField(payloadObject, "action");
+   string orderTypeValue = finaticExtractJsonStringField(payloadObject, "order_type");
+   double volumeLots = finaticExtractJsonDoubleField(payloadObject, "order_qty", 0.0);
+   double limitPrice = finaticExtractJsonDoubleField(payloadObject, "price", 0.0);
+   double stopEntryPrice = finaticExtractJsonDoubleField(payloadObject, "stop_price", 0.0);
+   double stopLossPrice = finaticExtractJsonDoubleField(payloadObject, "stop_loss", 0.0);
+   double takeProfitPrice = finaticExtractJsonDoubleField(payloadObject, "take_profit", 0.0);
+
+   if(StringLen(symbolValue) < 1 || volumeLots <= 0.0 || (actionValue != "buy" && actionValue != "sell"))
+     {
+      finaticPostCommandResultDetailed(commandIdentifier, false, 0, 0, "invalid place payload");
+      return;
+     }
+   if(!SymbolSelect(symbolValue, true))
+     {
+      finaticPostCommandResultDetailed(commandIdentifier, false, 0, GetLastError(), "symbol select failed");
+      return;
+     }
+
+   MqlTradeRequest tradeRequest;
+   MqlTradeResult tradeResult;
+   ZeroMemory(tradeRequest);
+   ZeroMemory(tradeResult);
+   tradeRequest.symbol = symbolValue;
+   tradeRequest.volume = volumeLots;
+   tradeRequest.deviation = 20;
+   tradeRequest.magic = FINATIC_EA_MAGIC;
+   tradeRequest.sl = finaticNormalizeMt5Price(symbolValue, stopLossPrice);
+   tradeRequest.tp = finaticNormalizeMt5Price(symbolValue, takeProfitPrice);
+   tradeRequest.type_filling = finaticResolveMt5FillingMode(symbolValue);
+
+   if(orderTypeValue == "market")
+     {
+      tradeRequest.action = TRADE_ACTION_DEAL;
+      tradeRequest.type = (actionValue == "buy") ? ORDER_TYPE_BUY : ORDER_TYPE_SELL;
+      tradeRequest.price = (actionValue == "buy")
+         ? SymbolInfoDouble(symbolValue, SYMBOL_ASK)
+         : SymbolInfoDouble(symbolValue, SYMBOL_BID);
+      tradeRequest.price = finaticNormalizeMt5Price(symbolValue, tradeRequest.price);
+     }
+   else if(orderTypeValue == "limit" || orderTypeValue == "stop")
+     {
+      tradeRequest.action = TRADE_ACTION_PENDING;
+      tradeRequest.type = finaticResolveMt5PendingOrderType(actionValue, orderTypeValue);
+      tradeRequest.price = finaticNormalizeMt5Price(
+         symbolValue,
+         (orderTypeValue == "limit") ? limitPrice : stopEntryPrice
+      );
+      if(tradeRequest.price <= 0.0)
+        {
+         finaticPostCommandResultDetailed(commandIdentifier, false, 0, 0, "pending price required");
+         return;
+        }
+     }
+   else
+     {
+      finaticPostCommandResultDetailed(commandIdentifier, false, 0, 0, "unsupported order_type");
+      return;
+     }
+
+   ResetLastError();
+   bool sent = OrderSend(tradeRequest, tradeResult);
+   long ticket = (long)tradeResult.order;
+   if(ticket <= 0)
+      ticket = (long)tradeResult.deal;
+   if(!sent || (tradeResult.retcode != TRADE_RETCODE_DONE && tradeResult.retcode != TRADE_RETCODE_PLACED &&
+      tradeResult.retcode != TRADE_RETCODE_DONE_PARTIAL))
+     {
+      string failureComment = tradeResult.comment;
+      if(StringLen(failureComment) < 1)
+         failureComment = "OrderSend failed";
+      finaticPostCommandResultDetailed(
+         commandIdentifier,
+         false,
+         ticket,
+         tradeResult.retcode != 0 ? tradeResult.retcode : (uint)GetLastError(),
+         failureComment
+      );
+      return;
+     }
+   finaticPostCommandResultDetailed(commandIdentifier, true, ticket, tradeResult.retcode, tradeResult.comment);
+  }
+
+void finaticExecuteCancelOrderCommand(string commandObject)
+  {
+   string commandIdentifier = finaticExtractJsonStringField(commandObject, "command_id");
+   string payloadObject = finaticExtractJsonObjectField(commandObject, "payload");
+   string orderIdText = finaticExtractJsonStringField(payloadObject, "order_id");
+   if(StringLen(orderIdText) < 1)
+      orderIdText = finaticExtractJsonStringField(payloadObject, "orderId");
+   long orderTicket = StringToInteger(orderIdText);
+   if(orderTicket <= 0)
+     {
+      finaticPostCommandResultDetailed(commandIdentifier, false, 0, 0, "order_id required");
+      return;
+     }
+
+   MqlTradeRequest tradeRequest;
+   MqlTradeResult tradeResult;
+   ZeroMemory(tradeRequest);
+   ZeroMemory(tradeResult);
+   tradeRequest.action = TRADE_ACTION_REMOVE;
+   tradeRequest.order = (ulong)orderTicket;
+   tradeRequest.magic = FINATIC_EA_MAGIC;
+   ResetLastError();
+   bool sent = OrderSend(tradeRequest, tradeResult);
+   if(!sent || (tradeResult.retcode != TRADE_RETCODE_DONE && tradeResult.retcode != TRADE_RETCODE_PLACED))
+     {
+      string failureComment = tradeResult.comment;
+      if(StringLen(failureComment) < 1)
+         failureComment = "cancel failed";
+      finaticPostCommandResultDetailed(
+         commandIdentifier,
+         false,
+         orderTicket,
+         tradeResult.retcode != 0 ? tradeResult.retcode : (uint)GetLastError(),
+         failureComment
+      );
+      return;
+     }
+   finaticPostCommandResultDetailed(commandIdentifier, true, orderTicket, tradeResult.retcode, tradeResult.comment);
+  }
+
+void finaticExecuteModifyOrderCommand(string commandObject)
+  {
+   string commandIdentifier = finaticExtractJsonStringField(commandObject, "command_id");
+   string payloadObject = finaticExtractJsonObjectField(commandObject, "payload");
+   string modifyTarget = finaticExtractJsonStringField(payloadObject, "modify_target");
+   if(StringLen(modifyTarget) < 1)
+      modifyTarget = "order";
+
+   double stopLossPrice = finaticExtractJsonDoubleField(payloadObject, "stop_loss", -1.0);
+   double takeProfitPrice = finaticExtractJsonDoubleField(payloadObject, "take_profit", -1.0);
+   bool clearStopLoss = finaticExtractJsonBoolField(payloadObject, "clear_stop_loss", false);
+   bool clearTakeProfit = finaticExtractJsonBoolField(payloadObject, "clear_take_profit", false);
+
+   if(modifyTarget == "position_risk")
+     {
+      string positionIdText = finaticExtractJsonStringField(payloadObject, "position_id");
+      long positionTicket = StringToInteger(positionIdText);
+      if(positionTicket <= 0)
+        {
+         finaticPostCommandResultDetailed(commandIdentifier, false, 0, 0, "position_id required");
+         return;
+        }
+      if(!PositionSelectByTicket((ulong)positionTicket))
+        {
+         finaticPostCommandResultDetailed(commandIdentifier, false, positionTicket, GetLastError(), "position not found");
+         return;
+        }
+      string positionSymbol = PositionGetString(POSITION_SYMBOL);
+      double currentStopLoss = PositionGetDouble(POSITION_SL);
+      double currentTakeProfit = PositionGetDouble(POSITION_TP);
+      double nextStopLoss = clearStopLoss ? 0.0 : (stopLossPrice >= 0.0 ? stopLossPrice : currentStopLoss);
+      double nextTakeProfit = clearTakeProfit ? 0.0 : (takeProfitPrice >= 0.0 ? takeProfitPrice : currentTakeProfit);
+
+      MqlTradeRequest tradeRequest;
+      MqlTradeResult tradeResult;
+      ZeroMemory(tradeRequest);
+      ZeroMemory(tradeResult);
+      tradeRequest.action = TRADE_ACTION_SLTP;
+      tradeRequest.position = (ulong)positionTicket;
+      tradeRequest.symbol = positionSymbol;
+      tradeRequest.sl = nextStopLoss;
+      tradeRequest.tp = nextTakeProfit;
+      tradeRequest.magic = FINATIC_EA_MAGIC;
+      ResetLastError();
+      bool sent = OrderSend(tradeRequest, tradeResult);
+      if(!sent || tradeResult.retcode != TRADE_RETCODE_DONE)
+        {
+         string failureComment = tradeResult.comment;
+         if(StringLen(failureComment) < 1)
+            failureComment = "position SL/TP modify failed";
+         finaticPostCommandResultDetailed(
+            commandIdentifier,
+            false,
+            positionTicket,
+            tradeResult.retcode != 0 ? tradeResult.retcode : (uint)GetLastError(),
+            failureComment
+         );
+         return;
+        }
+      finaticPostCommandResultDetailed(commandIdentifier, true, positionTicket, tradeResult.retcode, tradeResult.comment);
+      return;
+     }
+
+   string orderIdText = finaticExtractJsonStringField(payloadObject, "order_id");
+   long orderTicket = StringToInteger(orderIdText);
+   if(orderTicket <= 0)
+     {
+      finaticPostCommandResultDetailed(commandIdentifier, false, 0, 0, "order_id required");
+      return;
+     }
+   if(!OrderSelect(orderTicket))
+     {
+      finaticPostCommandResultDetailed(commandIdentifier, false, orderTicket, GetLastError(), "pending order not found");
+      return;
+     }
+
+   double nextPrice = finaticExtractJsonDoubleField(payloadObject, "price", OrderGetDouble(ORDER_PRICE_OPEN));
+   double nextStopLoss = clearStopLoss ? 0.0 : (stopLossPrice >= 0.0 ? stopLossPrice : OrderGetDouble(ORDER_SL));
+   double nextTakeProfit = clearTakeProfit ? 0.0 : (takeProfitPrice >= 0.0 ? takeProfitPrice : OrderGetDouble(ORDER_TP));
+   double nextVolume = finaticExtractJsonDoubleField(payloadObject, "order_qty", OrderGetDouble(ORDER_VOLUME_CURRENT));
+   double stopTrigger = finaticExtractJsonDoubleField(payloadObject, "stop_price", -1.0);
+   if(stopTrigger >= 0.0)
+      nextPrice = stopTrigger;
+
+   MqlTradeRequest tradeRequest;
+   MqlTradeResult tradeResult;
+   ZeroMemory(tradeRequest);
+   ZeroMemory(tradeResult);
+   tradeRequest.action = TRADE_ACTION_MODIFY;
+   tradeRequest.order = (ulong)orderTicket;
+   tradeRequest.price = nextPrice;
+   tradeRequest.sl = nextStopLoss;
+   tradeRequest.tp = nextTakeProfit;
+   tradeRequest.volume = nextVolume;
+   tradeRequest.magic = FINATIC_EA_MAGIC;
+   tradeRequest.symbol = OrderGetString(ORDER_SYMBOL);
+   tradeRequest.type = (ENUM_ORDER_TYPE)OrderGetInteger(ORDER_TYPE);
+   ResetLastError();
+   bool sent = OrderSend(tradeRequest, tradeResult);
+   if(!sent || tradeResult.retcode != TRADE_RETCODE_DONE)
+     {
+      string failureComment = tradeResult.comment;
+      if(StringLen(failureComment) < 1)
+         failureComment = "pending modify failed";
+      finaticPostCommandResultDetailed(
+         commandIdentifier,
+         false,
+         orderTicket,
+         tradeResult.retcode != 0 ? tradeResult.retcode : (uint)GetLastError(),
+         failureComment
+      );
+      return;
+     }
+   finaticPostCommandResultDetailed(commandIdentifier, true, orderTicket, tradeResult.retcode, tradeResult.comment);
+  }
+
 void finaticDrainPendingCommands(string heartbeatResponseBody)
   {
    int searchPosition = StringFind(heartbeatResponseBody, "\"pending_commands\"", 0);
@@ -500,20 +904,25 @@ void finaticDrainPendingCommands(string heartbeatResponseBody)
       int objectStart = StringFind(commandsBlock, "{", commandCursor);
       if(objectStart < 0)
          break;
-      int objectEnd = StringFind(commandsBlock, "}", objectStart);
-      if(objectEnd < 0)
+      string commandObject = finaticExtractBalancedJsonObject(commandsBlock, objectStart);
+      if(StringLen(commandObject) < 2)
          break;
-      string commandObject = StringSubstr(commandsBlock, objectStart, objectEnd - objectStart + 1);
       string commandKind = finaticExtractJsonStringField(commandObject, "kind");
       if(commandKind == "sync_history")
          finaticExecuteSyncHistoryCommand(commandObject);
+      else if(commandKind == "place_order")
+         finaticExecutePlaceOrderCommand(commandObject);
+      else if(commandKind == "cancel_order")
+         finaticExecuteCancelOrderCommand(commandObject);
+      else if(commandKind == "modify_order")
+         finaticExecuteModifyOrderCommand(commandObject);
       else
         {
          string commandIdentifier = finaticExtractJsonStringField(commandObject, "command_id");
          if(StringLen(commandIdentifier) > 0)
-            finaticPostCommandResult(commandIdentifier);
+            finaticPostCommandResultDetailed(commandIdentifier, false, 0, 0, "unsupported command kind");
         }
-      commandCursor = objectEnd + 1;
+      commandCursor = objectStart + StringLen(commandObject);
      }
   }
 
@@ -534,10 +943,8 @@ string finaticExtractJsonStringField(string jsonObjectText, string fieldName)
 
 void finaticPostCommandResult(string commandIdentifier)
   {
-   string innerPayload =
-      "{\"command_id\":\"" + commandIdentifier +
-      "\",\"accepted\":true,\"ea_result\":{\"received_at_ms\":" + IntegerToString((long)GetTickCount()) + "}}";
-   finaticPostMinimalRoute("command-result", innerPayload);
+   // Legacy helper kept for sync_history callers that still use the simple ACK.
+   finaticPostCommandResultDetailed(commandIdentifier, true, 0, 0, "ack");
   }
 
 string finaticBuildCanonicalPayloadJson(long sequenceNumber, int secretVersion, string platformValue, string innerPayloadJson)
