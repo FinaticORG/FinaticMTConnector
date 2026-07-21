@@ -13,7 +13,7 @@ dependencies = [
   "pydantic>=2.13.4",
   "typing-extensions>=4.15.0",
   "orjson>=3.11.9",
-  "poethepoet>=0.47.0",
+  "poethepoet>=0.48.0",
 ]
 
 [project.optional-dependencies]
