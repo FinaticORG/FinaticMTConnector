@@ -1,32 +1,45 @@
 version: 2
-
 updates:
+  - package-ecosystem: pip
+    directory: /
+    schedule:
+      interval: weekly
+    target-branch: develop
+    open-pull-requests-limit: 5
+    reviewers:
+      - founders
+    assignees:
+      - founders
+    commit-message:
+      prefix: chore
+      prefix-development: build
+      include: scope
+    versioning-strategy: increase
+    groups:
+      runtime-dependencies:
+        dependency-type: production
+        update-types:
+          - minor
+          - patch
+      development-dependencies:
+        dependency-type: development
+        update-types:
+          - minor
+          - patch
+
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: monthly
+      interval: weekly
+    target-branch: develop
+    reviewers:
+      - founders
+    assignees:
+      - founders
     commit-message:
-      prefix: "ci"
-      prefix-development: "ci"
+      prefix: ci
       include: scope
     groups:
       ci-dependencies:
         patterns:
           - "*"
-  - package-ecosystem: pip
-    directory: /
-    schedule:
-      interval: monthly
-    commit-message:
-      prefix: "chore"
-      prefix-development: "build"
-      include: scope
-    allow:
-      - dependency-type: production
-      - dependency-type: development
-    versioning-strategy: increase
-    groups:
-      runtime-dependencies:
-        dependency-type: production
-      development-dependencies:
-        dependency-type: development
