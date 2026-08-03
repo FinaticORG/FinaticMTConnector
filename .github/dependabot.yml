@@ -3,9 +3,9 @@ updates:
   - package-ecosystem: pip
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     target-branch: develop
-    open-pull-requests-limit: 5
+    open-pull-requests-limit: 3
     reviewers:
       - founders
     assignees:
@@ -26,11 +26,10 @@ updates:
         update-types:
           - minor
           - patch
-
   - package-ecosystem: github-actions
     directory: /
     schedule:
-      interval: weekly
+      interval: monthly
     target-branch: develop
     reviewers:
       - founders
@@ -43,3 +42,4 @@ updates:
       ci-dependencies:
         patterns:
           - "*"
+    open-pull-requests-limit: 2
