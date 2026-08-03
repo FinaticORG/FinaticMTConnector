@@ -1,6 +1,5 @@
 version: 2
 updates:
-
   - package-ecosystem: pip
     directory: /
     schedule:
@@ -27,7 +26,6 @@ updates:
         update-types:
           - minor
           - patch
-
   - package-ecosystem: github-actions
     directory: /
     schedule:
@@ -44,3 +42,4 @@ updates:
       ci-dependencies:
         patterns:
           - "*"
+    open-pull-requests-limit: 2
