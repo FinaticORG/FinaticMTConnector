@@ -21,29 +21,29 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-      - name: Skip heavy CI for Dependabot
-        if: github.actor == 'dependabot[bot]'
-        run: echo "Skipping heavy product CI for Dependabot (Actions cost control)."
+      - name: Skip heavy CI for Dependabot / release PRs
+        if: github.actor == 'dependabot[bot]' || (github.event_name == 'pull_request' && startsWith(github.event.pull_request.title, 'chore(release):'))
+        run: echo "Skipping heavy product CI for Dependabot or chore(release) PRs (Actions cost control)."
       - name: Checkout repository
-        if: github.actor != 'dependabot[bot]'
+        if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || !startsWith(github.event.pull_request.title, 'chore(release):'))
         uses: actions/checkout@v7
 
       - name: Install uv
-        if: github.actor != 'dependabot[bot]'
+        if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || !startsWith(github.event.pull_request.title, 'chore(release):'))
         uses: astral-sh/setup-uv@v7
         with:
           version: "latest"
 
       - name: Setup Python 3.12
-        if: github.actor != 'dependabot[bot]'
+        if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || !startsWith(github.event.pull_request.title, 'chore(release):'))
         uses: actions/setup-python@v7
         with:
           python-version: "3.12"
 
       - name: Sync dependencies
-        if: github.actor != 'dependabot[bot]'
+        if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || !startsWith(github.event.pull_request.title, 'chore(release):'))
         run: uv sync --all-extras --dev
 
       - name: Run CI-fast checks
-        if: github.actor != 'dependabot[bot]'
+        if: github.actor != 'dependabot[bot]' && (github.event_name != 'pull_request' || !startsWith(github.event.pull_request.title, 'chore(release):'))
         run: uv run poe ci-fast
