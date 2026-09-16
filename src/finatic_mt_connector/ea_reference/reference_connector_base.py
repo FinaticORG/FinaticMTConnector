@@ -32,6 +32,7 @@ from finatic_mt_connector.security.signing import (
 
 logger = logging.getLogger(__name__)
 MAX_PERSISTED_SEQUENCE = (1 << 53) - 1
+MAX_RECOVERABLE_SEQUENCE = MAX_PERSISTED_SEQUENCE - 1
 SEQUENCE_ERROR_CODE = "MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER"
 
 
@@ -128,7 +129,7 @@ class BaseReferenceConnector:
             isinstance(expected_sequence, bool)
             or not isinstance(expected_sequence, int)
             or expected_sequence < 0
-            or expected_sequence > MAX_PERSISTED_SEQUENCE
+            or expected_sequence > MAX_RECOVERABLE_SEQUENCE
         ):
             return None
         return expected_sequence
@@ -223,6 +224,12 @@ class BaseReferenceConnector:
     ) -> ReferenceTransportResponse:
         """POST minimal ``MTIngressRequestBody`` JSON to a deployed Background route."""
         sequence_index = self._minimal_webhook_sequence
+        if sequence_index > MAX_RECOVERABLE_SEQUENCE:
+            logger.error("mt_sequence_exhausted action=stop_before_send")
+            return ReferenceTransportResponse(
+                status_code=409,
+                body_text='{"error":{"code":"MT_CONNECTOR_SEQUENCE_EXHAUSTED"}}',
+            )
         response = self._push_minimal_webhook_once(
             route_suffix=route_suffix,
             payload=payload,

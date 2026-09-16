@@ -23,6 +23,11 @@ Malformed/unrelated 409s and failed retries do not advance persisted state.
 Repeated recovery events emit a redacted duplicate-installation warning; no
 connector secret or full connector ID is logged.
 
+Recovery accepts at most `9007199254740990`, so a successful retry can persist
+and reload `9007199254740991` as the next exactly represented terminal-global
+value. That terminal value is an exhausted sentinel and is never sent or
+incremented.
+
 ## Security
 
 Production stacks should enable signed envelopes (`FINATIC_PUSH_REQUIRE_INGEST_SIGNATURE`) once EA v0.3.x ships HMAC headers.

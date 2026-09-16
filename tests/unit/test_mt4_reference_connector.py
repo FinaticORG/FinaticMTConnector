@@ -5,9 +5,17 @@ from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 from uuid import UUID, uuid4
 
+import pytest
+
 from finatic_mt_connector.ea_reference.mt4 import (
     MT4ConnectorConfiguration,
     MT4ReferenceConnector,
+)
+from finatic_mt_connector.ea_reference.reference_connector_base import (
+    MAX_PERSISTED_SEQUENCE,
+    MAX_RECOVERABLE_SEQUENCE,
+    BaseReferenceConnector,
+    ReferenceTransportResponse,
 )
 
 
@@ -155,6 +163,97 @@ def test_sequence_409_retries_once_and_restores_persisted_next_sequence(
         sequence_state_path=state_path,
     )
     assert restarted_connector._minimal_webhook_sequence == 8
+
+
+def test_sequence_recovery_boundary_persists_and_reloads_successor(
+    tmp_path: Path,
+) -> None:
+    state_path = tmp_path / "mt4-next-sequence"
+    connector = _build_connector(sequence_state_path=state_path)
+    error_body = json.dumps(
+        {
+            "error": {
+                "code": "MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",
+                "details": {
+                    "expected_sequence": MAX_RECOVERABLE_SEQUENCE,
+                },
+            }
+        }
+    ).encode()
+    sequence_error = HTTPError(
+        "https://ingest.finatic.dev",
+        409,
+        "Conflict",
+        hdrs=None,
+        fp=BytesIO(error_body),
+    )
+    success = MagicMock()
+    success.status = 200
+    success.read.return_value = b'{"ok":true}'
+    success_context = MagicMock()
+    success_context.__enter__.return_value = success
+    success_context.__exit__.return_value = None
+
+    with patch(
+        "finatic_mt_connector.ea_reference.reference_connector_base.request.urlopen",
+        side_effect=[sequence_error, success_context],
+    ):
+        response = connector.push_minimal_heartbeat()
+
+    assert response.status_code == 200
+    assert state_path.read_text(encoding="utf-8") == str(MAX_PERSISTED_SEQUENCE)
+    restarted_connector = _build_connector(sequence_state_path=state_path)
+    assert (
+        restarted_connector._minimal_webhook_sequence == MAX_PERSISTED_SEQUENCE
+    )
+
+    with patch(
+        "finatic_mt_connector.ea_reference.reference_connector_base.request.urlopen"
+    ) as mock_urlopen:
+        exhausted_response = restarted_connector.push_minimal_heartbeat()
+
+    assert exhausted_response.status_code == 409
+    assert "MT_CONNECTOR_SEQUENCE_EXHAUSTED" in exhausted_response.body_text
+    mock_urlopen.assert_not_called()
+
+
+def test_sequence_recovery_rejects_first_unadvanceable_value() -> None:
+    response = ReferenceTransportResponse(
+        status_code=409,
+        body_text=json.dumps(
+            {
+                "error": {
+                    "code": "MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",
+                    "details": {
+                        "expected_sequence": MAX_PERSISTED_SEQUENCE,
+                    },
+                }
+            }
+        ),
+    )
+
+    assert BaseReferenceConnector._recovery_sequence(response) is None
+
+
+@pytest.mark.parametrize(
+    "body",
+    [
+        '{"error":{"code":{"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER":0},'
+        '"details":{"expected_sequence":7}}}',
+        '{"error":{"code":null,"later":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
+        '"details":{"expected_sequence":7}}}',
+        '{"error":{"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
+        '"wrapper":{"details":{"expected_sequence":7}},"details":null}}',
+        '{"error":{"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
+        '"details":{"nested":{"expected_sequence":7}}}}',
+    ],
+)
+def test_sequence_recovery_rejects_wrong_typed_or_nested_envelope(
+    body: str,
+) -> None:
+    response = ReferenceTransportResponse(status_code=409, body_text=body)
+
+    assert BaseReferenceConnector._recovery_sequence(response) is None
 
 
 def test_unrelated_409_does_not_reseed_or_retry() -> None:

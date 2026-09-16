@@ -23,6 +23,10 @@ Malformed/unrelated 409s and failed retries do not advance persisted state.
 Repeated recovery events emit a redacted duplicate-installation warning; no
 connector secret or full connector ID is logged.
 
+Recovery accepts at most `2147483646`, so a successful retry can persist and
+reload `2147483647` as the next value. That terminal value is an exhausted
+sentinel: the EA refuses to send it and never overflows or wraps the MT4 `int`.
+
 ## Security
 
 Production stacks should enable signed envelopes (`FINATIC_PUSH_REQUIRE_INGEST_SIGNATURE`) once EA v0.3.x ships HMAC headers.

@@ -19,4 +19,5 @@
 MT4 and MT5 sequence persistence and bounded 409 recovery use only native MQL
 terminal global variables, JSON/string helpers, `WebRequest`, and cryptographic
 functions already present in the EA sources. No additional third-party
-component or license is introduced.
+component or license is introduced. The fail-closed direct-member parser and
+sequence-ceiling guards are implemented in those native helpers as well.
