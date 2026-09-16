@@ -15,8 +15,10 @@ today's Background deployment without matching route changes.
 from __future__ import annotations
 
 import json
+import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from pathlib import Path
 from typing import Any
 from urllib import request
 from urllib.error import HTTPError
@@ -27,6 +29,10 @@ from finatic_mt_connector.security.signing import (
     build_signing_headers,
     extract_signable_body_dictionary,
 )
+
+logger = logging.getLogger(__name__)
+MAX_PERSISTED_SEQUENCE = (1 << 53) - 1
+SEQUENCE_ERROR_CODE = "MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER"
 
 
 @dataclass(frozen=True, slots=True)
@@ -46,6 +52,7 @@ class ReferenceConnectorConfiguration:
     secret_version: int = 1
     signing_scheme_version: int = 1
     timestamp_skew_seconds: int = 300
+    sequence_state_path: Path | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -64,7 +71,65 @@ class BaseReferenceConnector:
     ):
         self.connector_configuration = connector_configuration
         self._next_sequence = 1
-        self._minimal_webhook_sequence = 0
+        self._minimal_webhook_sequence = self._load_minimal_sequence()
+        self._sequence_recovery_count = 0
+
+    def _load_minimal_sequence(self) -> int:
+        state_path = self.connector_configuration.sequence_state_path
+        if state_path is None or not state_path.exists():
+            return 0
+        try:
+            sequence_value = int(state_path.read_text(encoding="utf-8").strip())
+        except (OSError, ValueError):
+            logger.warning("mt_sequence_state_invalid action=reset_to_zero")
+            return 0
+        if sequence_value < 0 or sequence_value > MAX_PERSISTED_SEQUENCE:
+            logger.warning(
+                "mt_sequence_state_out_of_range action=reset_to_zero"
+            )
+            return 0
+        return sequence_value
+
+    def _persist_minimal_sequence(self) -> None:
+        state_path = self.connector_configuration.sequence_state_path
+        if state_path is None:
+            return
+        temporary_path = state_path.with_name(f".{state_path.name}.tmp")
+        try:
+            state_path.parent.mkdir(parents=True, exist_ok=True)
+            temporary_path.write_text(
+                str(self._minimal_webhook_sequence), encoding="utf-8"
+            )
+            temporary_path.replace(state_path)
+        except OSError:
+            logger.exception("mt_sequence_state_persist_failed")
+
+    @staticmethod
+    def _recovery_sequence(response: ReferenceTransportResponse) -> int | None:
+        if response.status_code != 409:
+            return None
+        try:
+            response_body = json.loads(response.body_text)
+        except (json.JSONDecodeError, TypeError):
+            return None
+        error = response_body.get("error")
+        if (
+            not isinstance(error, dict)
+            or error.get("code") != SEQUENCE_ERROR_CODE
+        ):
+            return None
+        details = error.get("details")
+        if not isinstance(details, dict):
+            return None
+        expected_sequence = details.get("expected_sequence")
+        if (
+            isinstance(expected_sequence, bool)
+            or not isinstance(expected_sequence, int)
+            or expected_sequence < 0
+            or expected_sequence > MAX_PERSISTED_SEQUENCE
+        ):
+            return None
+        return expected_sequence
 
     def _next_sequence_value(self) -> int:
         current_sequence = self._next_sequence
@@ -155,8 +220,51 @@ class BaseReferenceConnector:
         sign_request: bool = False,
     ) -> ReferenceTransportResponse:
         """POST minimal ``MTIngressRequestBody`` JSON to a deployed Background route."""
-        connector_configuration = self.connector_configuration
         sequence_index = self._minimal_webhook_sequence
+        response = self._push_minimal_webhook_once(
+            route_suffix=route_suffix,
+            payload=payload,
+            sequence_index=sequence_index,
+            sign_request=sign_request,
+        )
+        if 200 <= response.status_code <= 299:
+            self._minimal_webhook_sequence = sequence_index + 1
+            self._persist_minimal_sequence()
+            return response
+
+        recovery_sequence = self._recovery_sequence(response)
+        if recovery_sequence is None:
+            return response
+
+        self._sequence_recovery_count += 1
+        logger.warning(
+            "mt_sequence_recovery route=%s recovery_count=%d "
+            "duplicate_installation_possible=%s",
+            route_suffix,
+            self._sequence_recovery_count,
+            str(self._sequence_recovery_count > 1).lower(),
+        )
+        self._minimal_webhook_sequence = recovery_sequence
+        retry_response = self._push_minimal_webhook_once(
+            route_suffix=route_suffix,
+            payload=payload,
+            sequence_index=recovery_sequence,
+            sign_request=sign_request,
+        )
+        if 200 <= retry_response.status_code <= 299:
+            self._minimal_webhook_sequence = recovery_sequence + 1
+            self._persist_minimal_sequence()
+        return retry_response
+
+    def _push_minimal_webhook_once(
+        self,
+        *,
+        route_suffix: str,
+        payload: dict[str, Any],
+        sequence_index: int,
+        sign_request: bool,
+    ) -> ReferenceTransportResponse:
+        connector_configuration = self.connector_configuration
         minimal_body = self._build_minimal_ingress_body(
             payload=payload,
             sequence=sequence_index,
@@ -196,9 +304,6 @@ class BaseReferenceConnector:
             return ReferenceTransportResponse(
                 status_code=response_status, body_text=response_text
             )
-
-        if 200 <= response_status <= 299:
-            self._minimal_webhook_sequence = sequence_index + 1
         return ReferenceTransportResponse(
             status_code=response_status, body_text=response_text
         )

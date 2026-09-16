@@ -14,8 +14,10 @@ input bool   FinaticSignEnvelopes = true;
 input int    FinaticHistoryMaxRows = 1500;
 
 long   g_ingestSequence = 0;
+int    g_sequenceRecoveryCount = 0;
 bool   g_ingestConfigurationValid = false;
 string g_ingestBaseUrl = "";
+string g_sequenceStateKey = "";
 
 int OnInit()
   {
@@ -23,6 +25,8 @@ int OnInit()
    if(!g_ingestConfigurationValid)
      return(INIT_FAILED);
    g_ingestBaseUrl = finaticTrimBaseUrl(FinaticIngestUrl);
+   g_sequenceStateKey = "FINATIC_NEXT_SEQUENCE_" + FinaticConnectorId;
+   finaticRestoreIngestSequence();
    if(FinaticSnapshotRequired)
       finaticPushSnapshot();
    EventSetTimer(FinaticHeartbeatSeconds);
@@ -96,6 +100,31 @@ string finaticTrimBaseUrl(string baseUrl)
    while(StringLen(trimmed) > 0 && StringGetCharacter(trimmed, StringLen(trimmed) - 1) == '/')
       trimmed = StringSubstr(trimmed, 0, StringLen(trimmed) - 1);
    return(trimmed);
+  }
+
+void finaticRestoreIngestSequence()
+  {
+   if(StringLen(g_sequenceStateKey) < 1 || !GlobalVariableCheck(g_sequenceStateKey))
+      return;
+   double storedValue = GlobalVariableGet(g_sequenceStateKey);
+   if(storedValue < 0 || storedValue > 9007199254740990.0 || MathFloor(storedValue) != storedValue)
+     {
+      Print("Finatic sequence state invalid; starting at zero for safe recovery.");
+      return;
+     }
+   g_ingestSequence = (long)storedValue;
+  }
+
+void finaticPersistIngestSequence()
+  {
+   if(StringLen(g_sequenceStateKey) < 1)
+      return;
+   if(!GlobalVariableSet(g_sequenceStateKey, (double)g_ingestSequence))
+     {
+      Print("Finatic sequence state persistence failed.");
+      return;
+     }
+   GlobalVariablesFlush();
   }
 
 string finaticBuildRouteUrl(string routeSuffix)
@@ -1028,13 +1057,18 @@ string finaticHmacSha256Hex(string secretValue, string messageValue)
    return(hexResult);
   }
 
-string finaticPostMinimalRoute(string routeSuffix, string innerPayloadJson)
+int finaticPostMinimalRouteAttempt(
+   string routeSuffix,
+   string innerPayloadJson,
+   long sequenceValue,
+   string &responseText
+)
   {
    if(StringLen(g_ingestBaseUrl) < 8)
-      return("");
+      return(-1);
    string requestUrl = finaticBuildRouteUrl(routeSuffix);
    string canonicalBody = finaticBuildCanonicalPayloadJson(
-      g_ingestSequence,
+      sequenceValue,
       FinaticSecretVersion,
       FinaticPlatform,
       innerPayloadJson
@@ -1062,14 +1096,82 @@ string finaticPostMinimalRoute(string routeSuffix, string innerPayloadJson)
    if(httpCode == -1)
      {
       Print("Finatic WebRequest failed route=", routeSuffix, " err=", GetLastError());
-      return("");
+      return(-1);
      }
-   string responseText = CharArrayToString(responseData, 0, WHOLE_ARRAY, CP_UTF8);
-   if(httpCode < 200 || httpCode > 299)
+   responseText = CharArrayToString(responseData, 0, WHOLE_ARRAY, CP_UTF8);
+   return(httpCode);
+  }
+
+bool finaticTryExtractSequenceRecovery(string responseText, long &expectedSequence)
+  {
+   string errorObject = finaticExtractJsonObjectField(responseText, "error");
+   if(StringLen(errorObject) < 2)
+      return(false);
+   string errorCode = finaticExtractJsonStringField(errorObject, "code");
+   if(errorCode != "MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER")
+      return(false);
+   string detailsObject = finaticExtractJsonObjectField(errorObject, "details");
+   if(StringLen(detailsObject) < 2)
+      return(false);
+   string needle = "\"expected_sequence\":";
+   int needlePosition = StringFind(detailsObject, needle, 0);
+   if(needlePosition < 0)
+      return(false);
+   long parsedSequence = StringToInteger(
+      StringSubstr(detailsObject, needlePosition + StringLen(needle))
+   );
+   if(parsedSequence < 0 || parsedSequence > 9007199254740990)
+      return(false);
+   expectedSequence = parsedSequence;
+   return(true);
+  }
+
+string finaticPostMinimalRoute(string routeSuffix, string innerPayloadJson)
+  {
+   string responseText = "";
+   int httpCode = finaticPostMinimalRouteAttempt(
+      routeSuffix,
+      innerPayloadJson,
+      g_ingestSequence,
+      responseText
+   );
+   if(httpCode >= 200 && httpCode <= 299)
      {
-      Print("Finatic HTTP ", httpCode, " route=", routeSuffix, " body=", responseText);
+      g_ingestSequence++;
+      finaticPersistIngestSequence();
+      return(responseText);
+     }
+
+   long expectedSequence = -1;
+   if(httpCode == 409 && finaticTryExtractSequenceRecovery(responseText, expectedSequence))
+     {
+      g_sequenceRecoveryCount++;
+      Print(
+         "Finatic sequence recovery route=",
+         routeSuffix,
+         " count=",
+         g_sequenceRecoveryCount,
+         " duplicate_installation_possible=",
+         (g_sequenceRecoveryCount > 1)
+      );
+      g_ingestSequence = expectedSequence;
+      string retryResponseText = "";
+      int retryHttpCode = finaticPostMinimalRouteAttempt(
+         routeSuffix,
+         innerPayloadJson,
+         expectedSequence,
+         retryResponseText
+      );
+      if(retryHttpCode >= 200 && retryHttpCode <= 299)
+        {
+         g_ingestSequence = expectedSequence + 1;
+         finaticPersistIngestSequence();
+         return(retryResponseText);
+        }
+      Print("Finatic sequence recovery failed route=", routeSuffix, " status=", retryHttpCode);
       return("");
      }
-   g_ingestSequence++;
-   return(responseText);
+
+   Print("Finatic HTTP failure route=", routeSuffix, " status=", httpCode);
+   return("");
   }

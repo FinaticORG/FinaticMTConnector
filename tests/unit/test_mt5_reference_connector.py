@@ -1,4 +1,8 @@
+import json
+from io import BytesIO
+from pathlib import Path
 from unittest.mock import MagicMock, patch
+from urllib.error import HTTPError
 from uuid import uuid4
 
 from finatic_mt_connector.ea_reference.mt5 import (
@@ -146,3 +150,71 @@ def test_push_minimal_signed_snapshot_sends_hmac_headers() -> None:
         raw_payload=signable_body,
         signature_value=signature_header,
     )
+
+
+def test_repeated_sequence_409_is_bounded_to_one_retry(tmp_path: Path) -> None:
+    connector_configuration = MT5ConnectorConfiguration(
+        platform="mt5",
+        connector_id=uuid4(),
+        connection_id=uuid4(),
+        connector_secret="secret-value",
+        ingest_base_url="https://ingest.finatic.dev",
+        sequence_state_path=tmp_path / "mt5-next-sequence",
+    )
+    connector = MT5ReferenceConnector(connector_configuration)
+
+    def sequence_error(expected_sequence: int) -> HTTPError:
+        response_body = json.dumps(
+            {
+                "error": {
+                    "code": "MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",
+                    "details": {"expected_sequence": expected_sequence},
+                }
+            }
+        ).encode()
+        return HTTPError(
+            "https://ingest.finatic.dev",
+            409,
+            "Conflict",
+            hdrs=None,
+            fp=BytesIO(response_body),
+        )
+
+    with patch(
+        "finatic_mt_connector.ea_reference.reference_connector_base.request.urlopen",
+        side_effect=[sequence_error(12), sequence_error(13)],
+    ) as mock_urlopen:
+        response = connector.push_minimal_heartbeat()
+
+    assert response.status_code == 409
+    assert mock_urlopen.call_count == 2
+    first_body = json.loads(mock_urlopen.call_args_list[0].args[0].data)
+    retry_body = json.loads(mock_urlopen.call_args_list[1].args[0].data)
+    assert first_body["sequence"] == 0
+    assert retry_body["sequence"] == 12
+    assert connector._minimal_webhook_sequence == 12
+    assert not connector_configuration.sequence_state_path.exists()
+
+
+def test_malformed_sequence_409_does_not_retry() -> None:
+    connector = _build_connector()
+    malformed_error = HTTPError(
+        "https://ingest.finatic.dev",
+        409,
+        "Conflict",
+        hdrs=None,
+        fp=BytesIO(
+            b'{"error":{"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
+            b'"details":{"expected_sequence":"7"}}}'
+        ),
+    )
+
+    with patch(
+        "finatic_mt_connector.ea_reference.reference_connector_base.request.urlopen",
+        side_effect=malformed_error,
+    ) as mock_urlopen:
+        response = connector.push_minimal_heartbeat()
+
+    assert response.status_code == 409
+    mock_urlopen.assert_called_once()
+    assert connector._minimal_webhook_sequence == 0

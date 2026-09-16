@@ -13,3 +13,10 @@
 1. Prefer configuration and adapter wrapping before code forking.
 2. If a fork is required, pin upstream commit and keep patch set minimal.
 3. Add regression tests for every local behavioral patch.
+
+## Sequence-state implementation
+
+MT4 and MT5 sequence persistence and bounded 409 recovery use only native MQL
+terminal global variables, JSON/string helpers, `WebRequest`, and cryptographic
+functions already present in the EA sources. No additional third-party
+component or license is introduced.
