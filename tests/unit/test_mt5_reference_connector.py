@@ -5,6 +5,8 @@ from unittest.mock import MagicMock, patch
 from urllib.error import HTTPError
 from uuid import uuid4
 
+import pytest
+
 from finatic_mt_connector.ea_reference.mt5 import (
     MT5ConnectorConfiguration,
     MT5ReferenceConnector,
@@ -207,6 +209,32 @@ def test_malformed_sequence_409_does_not_retry() -> None:
             b'{"error":{"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
             b'"details":{"expected_sequence":"7"}}}'
         ),
+    )
+
+    with patch(
+        "finatic_mt_connector.ea_reference.reference_connector_base.request.urlopen",
+        side_effect=malformed_error,
+    ) as mock_urlopen:
+        response = connector.push_minimal_heartbeat()
+
+    assert response.status_code == 409
+    mock_urlopen.assert_called_once()
+    assert connector._minimal_webhook_sequence == 0
+
+
+@pytest.mark.parametrize(
+    "response_body", [b"[]", b"null", b'"error"', b"1", b"true"]
+)
+def test_non_object_sequence_409_body_does_not_retry(
+    response_body: bytes,
+) -> None:
+    connector = _build_connector()
+    malformed_error = HTTPError(
+        "https://ingest.finatic.dev",
+        409,
+        "Conflict",
+        hdrs=None,
+        fp=BytesIO(response_body),
     )
 
     with patch(

@@ -112,6 +112,8 @@ class BaseReferenceConnector:
             response_body = json.loads(response.body_text)
         except (json.JSONDecodeError, TypeError):
             return None
+        if not isinstance(response_body, dict):
+            return None
         error = response_body.get("error")
         if (
             not isinstance(error, dict)

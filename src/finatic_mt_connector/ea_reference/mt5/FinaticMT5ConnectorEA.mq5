@@ -550,19 +550,85 @@ string finaticExtractBalancedJsonObject(string text, int startPosition)
    return("");
   }
 
+int finaticSkipJsonWhitespace(string text, int position)
+  {
+   while(position < StringLen(text))
+     {
+      ushort character = StringGetCharacter(text, position);
+      if(character != ' ' && character != '\t' && character != '\r' && character != '\n')
+         break;
+      position++;
+     }
+   return(position);
+  }
+
 string finaticExtractJsonObjectField(string jsonObjectText, string fieldName)
   {
    string needle = "\"" + fieldName + "\"";
    int needlePosition = StringFind(jsonObjectText, needle, 0);
    if(needlePosition < 0)
       return("");
-   int colonPosition = StringFind(jsonObjectText, ":", needlePosition + StringLen(needle));
-   if(colonPosition < 0)
+   int colonPosition = finaticSkipJsonWhitespace(
+      jsonObjectText,
+      needlePosition + StringLen(needle)
+   );
+   if(colonPosition >= StringLen(jsonObjectText) || StringGetCharacter(jsonObjectText, colonPosition) != ':')
       return("");
-   int objectStart = StringFind(jsonObjectText, "{", colonPosition);
-   if(objectStart < 0)
+   int objectStart = finaticSkipJsonWhitespace(jsonObjectText, colonPosition + 1);
+   if(objectStart >= StringLen(jsonObjectText) || StringGetCharacter(jsonObjectText, objectStart) != '{')
       return("");
    return(finaticExtractBalancedJsonObject(jsonObjectText, objectStart));
+  }
+
+bool finaticExtractJsonNonnegativeIntegerField(
+   string jsonObjectText,
+   string fieldName,
+   long maximumValue,
+   long &fieldValue
+)
+  {
+   string needle = "\"" + fieldName + "\"";
+   int needlePosition = StringFind(jsonObjectText, needle, 0);
+   if(needlePosition < 0)
+      return(false);
+   int colonPosition = finaticSkipJsonWhitespace(
+      jsonObjectText,
+      needlePosition + StringLen(needle)
+   );
+   if(colonPosition >= StringLen(jsonObjectText) || StringGetCharacter(jsonObjectText, colonPosition) != ':')
+      return(false);
+   int valuePosition = finaticSkipJsonWhitespace(jsonObjectText, colonPosition + 1);
+   if(valuePosition >= StringLen(jsonObjectText))
+      return(false);
+
+   long parsedValue = 0;
+   int digitCount = 0;
+   bool hasLeadingZero = StringGetCharacter(jsonObjectText, valuePosition) == '0';
+   while(valuePosition < StringLen(jsonObjectText))
+     {
+      ushort character = StringGetCharacter(jsonObjectText, valuePosition);
+      if(character < '0' || character > '9')
+         break;
+      int digitValue = (int)(character - '0');
+      if(parsedValue > (maximumValue - digitValue) / 10)
+         return(false);
+      parsedValue = parsedValue * 10 + digitValue;
+      digitCount++;
+      valuePosition++;
+     }
+   if(digitCount == 0)
+      return(false);
+   if(hasLeadingZero && digitCount > 1)
+      return(false);
+
+   valuePosition = finaticSkipJsonWhitespace(jsonObjectText, valuePosition);
+   if(valuePosition >= StringLen(jsonObjectText))
+      return(false);
+   ushort delimiter = StringGetCharacter(jsonObjectText, valuePosition);
+   if(delimiter != ',' && delimiter != '}')
+      return(false);
+   fieldValue = parsedValue;
+   return(true);
   }
 
 double finaticExtractJsonDoubleField(string jsonObjectText, string fieldName, double defaultValue)
@@ -1113,14 +1179,13 @@ bool finaticTryExtractSequenceRecovery(string responseText, long &expectedSequen
    string detailsObject = finaticExtractJsonObjectField(errorObject, "details");
    if(StringLen(detailsObject) < 2)
       return(false);
-   string needle = "\"expected_sequence\":";
-   int needlePosition = StringFind(detailsObject, needle, 0);
-   if(needlePosition < 0)
-      return(false);
-   long parsedSequence = StringToInteger(
-      StringSubstr(detailsObject, needlePosition + StringLen(needle))
-   );
-   if(parsedSequence < 0 || parsedSequence > 9007199254740990)
+   long parsedSequence = -1;
+   if(!finaticExtractJsonNonnegativeIntegerField(
+      detailsObject,
+      "expected_sequence",
+      9007199254740990,
+      parsedSequence
+   ))
       return(false);
    expectedSequence = parsedSequence;
    return(true);
