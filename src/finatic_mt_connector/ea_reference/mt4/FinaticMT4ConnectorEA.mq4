@@ -594,40 +594,40 @@ int finaticSkipJsonValue(string text, int valuePosition)
       int objectDepth = 0;
       int arrayDepth = 0;
       bool inString = false;
-      for(int index = position; index < StringLen(text); index++)
+      for(int containerIndex = position; containerIndex < StringLen(text); containerIndex++)
         {
-         int character = StringGetCharacter(text, index);
-         if(character == '\\' && inString)
+         int containerCharacter = StringGetCharacter(text, containerIndex);
+         if(containerCharacter == '\\' && inString)
            {
-            index++;
+            containerIndex++;
             continue;
            }
-         if(character == '"')
+         if(containerCharacter == '"')
            {
             inString = !inString;
             continue;
            }
          if(inString)
             continue;
-         if(character == '{')
+         if(containerCharacter == '{')
             objectDepth++;
-         else if(character == '}')
+         else if(containerCharacter == '}')
             objectDepth--;
-         else if(character == '[')
+         else if(containerCharacter == '[')
             arrayDepth++;
-         else if(character == ']')
+         else if(containerCharacter == ']')
             arrayDepth--;
          if(objectDepth < 0 || arrayDepth < 0)
             return(-1);
          if(objectDepth == 0 && arrayDepth == 0)
-            return(index + 1);
+            return(containerIndex + 1);
         }
       return(-1);
      }
    while(position < StringLen(text))
      {
-      int character = StringGetCharacter(text, position);
-      if(character == ',' || character == '}' || character == ']')
+      int scalarCharacter = StringGetCharacter(text, position);
+      if(scalarCharacter == ',' || scalarCharacter == '}' || scalarCharacter == ']')
          break;
       position++;
      }
