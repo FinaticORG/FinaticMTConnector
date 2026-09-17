@@ -71,10 +71,50 @@ def test_mql_json_helpers_reject_later_objects_and_non_integer_suffixes(
 
     assert "finaticFindDirectJsonFieldValue" in source
     assert "finaticIsExactJsonObject(responseText)" in source
+    assert "finaticSkipJsonStringToken" in source
+    assert "finaticSkipJsonNumberToken" in source
+    assert "objectValueEnd = finaticSkipJsonValueAtDepth" in source
+    assert "arrayValueEnd = finaticSkipJsonValueAtDepth" in source
+    assert "if(depth > 32)" in source
+    assert 'StringSubstr(text, position, 4) == "true"' in source
+    assert 'StringSubstr(text, position, 4) == "null"' in source
+    assert 'StringSubstr(text, position, 5) == "false"' in source
     assert "digitCount == 0" in source
     assert "hasLeadingZero && digitCount > 1" in source
     assert "parsedValue > (maximumValue - digitValue) / 10" in source
     assert "delimiter != ',' && delimiter != '}'" in source
+
+
+@pytest.mark.parametrize("source_path", MQL_SOURCES)
+def test_actual_mql_parser_self_test_is_a_startup_gate(
+    source_path: Path,
+) -> None:
+    source = source_path.read_text(encoding="utf-8")
+    on_init_start = source.index("int OnInit()")
+    validation_start = source.index(
+        "g_ingestConfigurationValid = finaticValidateIngestConfiguration()",
+        on_init_start,
+    )
+    startup_prefix = source[on_init_start:validation_start]
+    self_test_start = source.index("bool finaticSequenceRecoveryParserSelfTest")
+    post_start = source.index("string finaticPostMinimalRoute", self_test_start)
+    self_test_source = source[self_test_start:post_start]
+
+    assert "finaticSequenceRecoveryParserSelfTest()" in startup_prefix
+    assert "return(INIT_FAILED);" in startup_prefix
+    assert "finaticTryExtractSequenceRecovery(validResponse" in self_test_source
+    assert (
+        "finaticTryExtractSequenceRecovery(malformedResponses"
+        in self_test_source
+    )
+    assert '"junk\\":bogus' in self_test_source
+    assert "}garbage" in self_test_source
+    assert 'expected_sequence\\":7,' in self_test_source
+    assert (
+        'expected_sequence\\":7,\\"expected_sequence\\":8' in self_test_source
+    )
+    assert 'bad_string\\":\\"\\\\q' in self_test_source
+    assert "} trailing" in self_test_source
 
 
 @pytest.mark.parametrize("source_path", MQL_SOURCES)
@@ -128,6 +168,21 @@ def test_mql_sequence_limits_keep_persisted_successor_reloadable(
         (
             '{"error":{"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
             '"details":{"nested":{"expected_sequence":7}}}}',
+            None,
+        ),
+        (
+            '{"error":{"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
+            '"details":{"junk":bogus,"expected_sequence":7}}}',
+            None,
+        ),
+        (
+            '{"error":{"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
+            '"details":{"expected_sequence":7,}}}',
+            None,
+        ),
+        (
+            '{"error":{"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
+            '"details":{"expected_sequence":7}}} trailing',
             None,
         ),
     ],
