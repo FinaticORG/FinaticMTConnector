@@ -121,6 +121,9 @@ jobs:
 
           $mt4SourcePath = "$env:GITHUB_WORKSPACE\$env:MT4_SOURCE_PATH"
           $mt4BuildLogPath = "$env:RUNNER_TEMP\mt4-build.log"
+          $mt4CompiledPath = [System.IO.Path]::ChangeExtension($mt4SourcePath, ".ex4")
+          Remove-Item -LiteralPath $mt4CompiledPath -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $mt4BuildLogPath -Force -ErrorAction SilentlyContinue
           $compileStartedAtUtc = [datetime]::UtcNow
 
           & "${{ steps.discover-metaeditors.outputs.mt4_metaeditor_path }}" /compile:"$mt4SourcePath" /log:"$mt4BuildLogPath"
@@ -132,14 +135,13 @@ jobs:
             throw "MT4 compilation command failed. Exit code: $metaEditorExitCode"
           }
 
-          $mt4CompiledPath = [System.IO.Path]::ChangeExtension($mt4SourcePath, ".ex4")
           if (-not (Test-Path $mt4CompiledPath)) {
             if (Test-Path $mt4BuildLogPath) {
               Get-Content $mt4BuildLogPath
             }
             throw "MT4 compilation did not produce FinaticMT4ConnectorEA.ex4."
           }
-          if ((Get-Item $mt4CompiledPath).Length -le 0 -or (Get-Item $mt4CompiledPath).LastWriteTimeUtc -lt $compileStartedAtUtc.AddMinutes(-1)) {
+          if ((Get-Item $mt4CompiledPath).Length -le 0 -or (Get-Item $mt4CompiledPath).LastWriteTimeUtc -lt $compileStartedAtUtc) {
             throw "MT4 compilation did not produce a fresh non-empty artifact."
           }
           if (-not (Test-Path $mt4BuildLogPath) -or (Get-Content $mt4BuildLogPath -Raw) -notmatch '(?i)0\s+error(?:s|\(s\))?,\s*0\s+warning(?:s|\(s\))?') {
@@ -160,6 +162,9 @@ jobs:
 
           $mt5SourcePath = "$env:GITHUB_WORKSPACE\$env:MT5_SOURCE_PATH"
           $mt5BuildLogPath = "$env:RUNNER_TEMP\mt5-build.log"
+          $mt5CompiledPath = [System.IO.Path]::ChangeExtension($mt5SourcePath, ".ex5")
+          Remove-Item -LiteralPath $mt5CompiledPath -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $mt5BuildLogPath -Force -ErrorAction SilentlyContinue
           $compileStartedAtUtc = [datetime]::UtcNow
 
           & "${{ steps.discover-metaeditors.outputs.mt5_metaeditor_path }}" /compile:"$mt5SourcePath" /log:"$mt5BuildLogPath"
@@ -171,14 +176,13 @@ jobs:
             throw "MT5 compilation command failed. Exit code: $metaEditorExitCode"
           }
 
-          $mt5CompiledPath = [System.IO.Path]::ChangeExtension($mt5SourcePath, ".ex5")
           if (-not (Test-Path $mt5CompiledPath)) {
             if (Test-Path $mt5BuildLogPath) {
               Get-Content $mt5BuildLogPath
             }
             throw "MT5 compilation did not produce FinaticMT5ConnectorEA.ex5."
           }
-          if ((Get-Item $mt5CompiledPath).Length -le 0 -or (Get-Item $mt5CompiledPath).LastWriteTimeUtc -lt $compileStartedAtUtc.AddMinutes(-1)) {
+          if ((Get-Item $mt5CompiledPath).Length -le 0 -or (Get-Item $mt5CompiledPath).LastWriteTimeUtc -lt $compileStartedAtUtc) {
             throw "MT5 compilation did not produce a fresh non-empty artifact."
           }
           if (-not (Test-Path $mt5BuildLogPath) -or (Get-Content $mt5BuildLogPath -Raw) -notmatch '(?i)0\s+error(?:s|\(s\))?,\s*0\s+warning(?:s|\(s\))?') {

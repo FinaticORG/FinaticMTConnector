@@ -97,3 +97,78 @@ def test_release_paths_publish_complete_checksummed_assets() -> None:
         "checksums.sha256",
     ):
         assert contract_marker in local_release
+
+
+def _assert_stale_outputs_cannot_satisfy_compile(
+    release_path: str,
+    *,
+    binary_variable: str,
+    log_variable: str,
+    compile_command: str,
+    missing_output_check: str,
+) -> None:
+    """Verify seeded output and log paths are removed before compilation."""
+    remove_binary = (
+        f"Remove-Item -LiteralPath ${binary_variable} -Force "
+        "-ErrorAction SilentlyContinue"
+    )
+    remove_log = (
+        f"Remove-Item -LiteralPath ${log_variable} -Force "
+        "-ErrorAction SilentlyContinue"
+    )
+
+    remove_binary_position = release_path.index(remove_binary)
+    remove_log_position = release_path.index(remove_log)
+    compile_position = release_path.index(
+        compile_command, max(remove_binary_position, remove_log_position)
+    )
+    rejection_position = release_path.index(
+        missing_output_check, compile_position
+    )
+
+    assert remove_binary_position < compile_position < rejection_position
+    assert remove_log_position < compile_position < rejection_position
+
+
+def test_preexisting_workflow_outputs_are_removed_and_cannot_be_reused() -> (
+    None
+):
+    workflow = (REPO_ROOT / ".github/workflows/ea-build.yml").read_text(
+        encoding="utf-8"
+    )
+
+    for platform in ("mt4", "mt5"):
+        _assert_stale_outputs_cannot_satisfy_compile(
+            workflow,
+            binary_variable=f"{platform}CompiledPath",
+            log_variable=f"{platform}BuildLogPath",
+            compile_command=f'/compile:"${platform}SourcePath"',
+            missing_output_check=f"-not (Test-Path ${platform}CompiledPath)",
+        )
+        assert (
+            f"(Get-Item ${platform}CompiledPath).LastWriteTimeUtc "
+            "-lt $compileStartedAtUtc"
+        ) in workflow
+
+    assert ".AddMinutes(-1)" not in workflow
+
+
+def test_preexisting_local_outputs_are_removed_and_cannot_be_reused() -> None:
+    local_release = (REPO_ROOT / "scripts/release/local_release.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    for platform in ("mt4", "mt5"):
+        _assert_stale_outputs_cannot_satisfy_compile(
+            local_release,
+            binary_variable=f"{platform}BinaryPath",
+            log_variable=f"{platform}BuildLogPath",
+            compile_command=f'/compile:"${platform}CompilePath"',
+            missing_output_check=(
+                f"Assert-FreshCompiledBinary -ExpectedPath ${platform}BinaryPath"
+            ),
+        )
+
+    assert "Resolve-CompiledBinaryPath" not in local_release
+    assert "-Filter $BinaryFilename" not in local_release
+    assert ".AddMinutes(-1)" not in local_release

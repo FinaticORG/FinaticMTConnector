@@ -146,52 +146,21 @@ function Resolve-MetaEditorPath {
   throw "Unable to locate MetaEditor for $Label. Check local MT installation."
 }
 
-function Resolve-CompiledBinaryPath {
+function Assert-FreshCompiledBinary {
   param(
     [string]$ExpectedPath,
-    [string]$BinaryFilename,
-    [string]$PlatformFolderName,
+    [string]$Platform,
     [datetime]$CompileStartedAtUtc
   )
 
-  if (Test-Path $ExpectedPath) {
-    $expectedFile = Get-Item $ExpectedPath
-    if ($expectedFile.Length -gt 0 -and $expectedFile.LastWriteTimeUtc -ge $CompileStartedAtUtc.AddMinutes(-1)) {
-      return $ExpectedPath
-    }
+  if (-not (Test-Path $ExpectedPath)) {
+    throw "$Platform compilation did not recreate its bound output: $ExpectedPath"
   }
 
-  $searchRoots = @(
-    (Split-Path -Parent $ExpectedPath),
-    "$env:APPDATA\MetaQuotes\Terminal",
-    "$env:LOCALAPPDATA\MetaQuotes\Terminal",
-    "C:\Program Files\MetaTrader 4",
-    "C:\Program Files (x86)\MetaTrader 4",
-    "C:\Program Files\MetaTrader 5",
-    "C:\Program Files (x86)\MetaTrader 5"
-  ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
-
-  $candidateFiles = @()
-  foreach ($searchRoot in $searchRoots) {
-    $candidateFiles += Get-ChildItem -Path $searchRoot -Recurse -Filter $BinaryFilename -ErrorAction SilentlyContinue
+  $compiledFile = Get-Item $ExpectedPath
+  if ($compiledFile.Length -le 0 -or $compiledFile.LastWriteTimeUtc -lt $CompileStartedAtUtc) {
+    throw "$Platform compilation did not produce a fresh non-empty bound output: $ExpectedPath"
   }
-
-  $freshCandidateFiles = $candidateFiles | Where-Object {
-    $_.Length -gt 0 -and $_.LastWriteTimeUtc -ge $CompileStartedAtUtc.AddMinutes(-1)
-  }
-
-  if ($freshCandidateFiles) {
-    $preferredFreshFile = $freshCandidateFiles |
-      Where-Object { $_.FullName -match "$PlatformFolderName\\Experts" } |
-      Sort-Object LastWriteTimeUtc -Descending |
-      Select-Object -First 1
-    if ($preferredFreshFile) {
-      return $preferredFreshFile.FullName
-    }
-    return ($freshCandidateFiles | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).FullName
-  }
-
-  throw "No fresh non-empty $BinaryFilename was produced after the compile started."
 }
 
 function Get-TerminalRootFromMetaEditor {
@@ -284,10 +253,14 @@ $mt5ExpertsPath = Resolve-ExpertsDirectoryPath -PlatformFolderName "MQL5" -Termi
 
 $mt4CompilePath = Join-Path $mt4ExpertsPath "FinaticMT4ConnectorEA.mq4"
 $mt5CompilePath = Join-Path $mt5ExpertsPath "FinaticMT5ConnectorEA.mq5"
+$mt4BinaryPath = [System.IO.Path]::ChangeExtension($mt4CompilePath, ".ex4")
+$mt5BinaryPath = [System.IO.Path]::ChangeExtension($mt5CompilePath, ".ex5")
 
 Copy-Item $mt4SourcePath $mt4CompilePath -Force
 Copy-Item $mt5SourcePath $mt5CompilePath -Force
 
+Remove-Item -LiteralPath $mt4BinaryPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $mt4BuildLogPath -Force -ErrorAction SilentlyContinue
 $mt4CompileStartedAtUtc = [datetime]::UtcNow
 & $mt4EditorPath /compile:"$mt4CompilePath" /log:"$mt4BuildLogPath"
 if ($LASTEXITCODE -ne 0) {
@@ -295,7 +268,10 @@ if ($LASTEXITCODE -ne 0) {
   throw "MT4 compilation failed."
 }
 Assert-MetaEditorCompileLog -LogPath $mt4BuildLogPath -Platform "MT4"
+Assert-FreshCompiledBinary -ExpectedPath $mt4BinaryPath -Platform "MT4" -CompileStartedAtUtc $mt4CompileStartedAtUtc
 
+Remove-Item -LiteralPath $mt5BinaryPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $mt5BuildLogPath -Force -ErrorAction SilentlyContinue
 $mt5CompileStartedAtUtc = [datetime]::UtcNow
 & $mt5EditorPath /compile:"$mt5CompilePath" /log:"$mt5BuildLogPath"
 if ($LASTEXITCODE -ne 0) {
@@ -303,29 +279,7 @@ if ($LASTEXITCODE -ne 0) {
   throw "MT5 compilation failed."
 }
 Assert-MetaEditorCompileLog -LogPath $mt5BuildLogPath -Platform "MT5"
-
-$mt4BinaryPath = [System.IO.Path]::ChangeExtension($mt4CompilePath, ".ex4")
-$mt5BinaryPath = [System.IO.Path]::ChangeExtension($mt5CompilePath, ".ex5")
-try {
-  $mt4BinaryPath = Resolve-CompiledBinaryPath -ExpectedPath $mt4BinaryPath -BinaryFilename "FinaticMT4ConnectorEA.ex4" -PlatformFolderName "MQL4" -CompileStartedAtUtc $mt4CompileStartedAtUtc
-} catch {
-  if (Test-Path $mt4BuildLogPath) {
-    Write-Host "---- MT4 build log ----"
-    Get-Content $mt4BuildLogPath
-    Write-Host "-----------------------"
-  }
-  throw
-}
-try {
-  $mt5BinaryPath = Resolve-CompiledBinaryPath -ExpectedPath $mt5BinaryPath -BinaryFilename "FinaticMT5ConnectorEA.ex5" -PlatformFolderName "MQL5" -CompileStartedAtUtc $mt5CompileStartedAtUtc
-} catch {
-  if (Test-Path $mt5BuildLogPath) {
-    Write-Host "---- MT5 build log ----"
-    Get-Content $mt5BuildLogPath
-    Write-Host "-----------------------"
-  }
-  throw
-}
+Assert-FreshCompiledBinary -ExpectedPath $mt5BinaryPath -Platform "MT5" -CompileStartedAtUtc $mt5CompileStartedAtUtc
 
 Copy-Item $mt4BinaryPath (Join-Path $distDirectory "FinaticMT4ConnectorEA.ex4") -Force
 Copy-Item $mt5BinaryPath (Join-Path $distDirectory "FinaticMT5ConnectorEA.ex5") -Force
