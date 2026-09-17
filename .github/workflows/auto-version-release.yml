@@ -22,7 +22,7 @@ concurrency:
 
 jobs:
   bump-version-and-tag:
-    name: Bump patch version and create tag
+    name: Validate reviewed version and create tag
     if: github.actor != 'github-actions[bot]'
     runs-on: ubuntu-latest
     steps:
@@ -58,27 +58,29 @@ jobs:
           echo "next_version=$next_version" >> "$GITHUB_OUTPUT"
           echo "next_tag=v$next_version" >> "$GITHUB_OUTPUT"
 
-      - name: Update project version
+      - name: Validate reviewed release version
         shell: bash
         run: |
           python - <<'PY'
           from pathlib import Path
+          import re
 
           pyproject_path = Path("pyproject.toml")
           pyproject_text = pyproject_path.read_text(encoding="utf-8")
-          previous_line_prefix = 'version = "'
-          next_version_value = "${{ steps.next-version.outputs.next_version }}"
-          updated_lines: list[str] = []
-          version_line_updated = False
-          for current_line in pyproject_text.splitlines():
-              if current_line.startswith(previous_line_prefix) and not version_line_updated:
-                  updated_lines.append(f'version = "{next_version_value}"')
-                  version_line_updated = True
-                  continue
-              updated_lines.append(current_line)
-          if not version_line_updated:
+          version_match = re.search(
+              r'^version = "([0-9]+\.[0-9]+\.[0-9]+)"$',
+              pyproject_text,
+              flags=re.MULTILINE,
+          )
+          if version_match is None:
               raise RuntimeError("Unable to locate project version in pyproject.toml")
-          pyproject_path.write_text("\n".join(updated_lines) + "\n", encoding="utf-8")
+          reviewed_version = version_match.group(1)
+          expected_version = "${{ steps.next-version.outputs.next_version }}"
+          if reviewed_version != expected_version:
+              raise RuntimeError(
+                  f"Reviewed version {reviewed_version} does not match next tag {expected_version}; "
+                  "align package and EA versions in a reviewed PR before tagging"
+              )
           PY
 
       - name: Configure git author
@@ -86,15 +88,17 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Commit version bump
-        shell: bash
-        run: |
-          git add pyproject.toml
-          git commit -m "chore(release): ${{ steps.next-version.outputs.next_tag }} [skip ci] [skip release]"
-
       - name: Create and push release tag
         shell: bash
         run: |
-          git tag "${{ steps.next-version.outputs.next_tag }}"
-          git push origin HEAD:develop
+          git tag -a "${{ steps.next-version.outputs.next_tag }}" -m "Finatic MT Connector ${{ steps.next-version.outputs.next_tag }}"
           git push origin "${{ steps.next-version.outputs.next_tag }}"
+
+      - name: Record explicit artifact-build handoff
+        shell: bash
+        run: |
+          {
+            echo "Tag ${{ steps.next-version.outputs.next_tag }} now points to $(git rev-parse HEAD)."
+            echo "Run Build and Release EA Artifacts with release_tag=${{ steps.next-version.outputs.next_tag }}."
+            echo "Publication still requires clean MT4/MT5 compile logs, complete checksums/provenance, and dual-platform signed staging acceptance."
+          } >> "$GITHUB_STEP_SUMMARY"
