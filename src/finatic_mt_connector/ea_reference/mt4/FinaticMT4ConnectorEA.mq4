@@ -783,6 +783,8 @@ bool finaticFindDirectJsonFieldValue(
       if(keyTokenEnd < 0)
          return(false);
       string key = StringSubstr(jsonObjectText, keyStart, keyTokenEnd - keyStart - 1);
+      if(StringFind(key, "\\") >= 0)
+         return(false);
       int colonPosition = finaticSkipJsonWhitespace(jsonObjectText, keyTokenEnd);
       if(colonPosition >= StringLen(jsonObjectText) || StringGetCharacter(jsonObjectText, colonPosition) != ':')
          return(false);
@@ -1370,7 +1372,7 @@ bool finaticSequenceRecoveryParserSelfTest()
    if(!finaticTryExtractSequenceRecovery(validResponse, parsedSequence) || parsedSequence != 7)
       return(false);
 
-   string malformedResponses[10];
+   string malformedResponses[14];
    malformedResponses[0] =
       "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
       "\"junk\":bogus,\"expected_sequence\":7}}}";
@@ -1402,6 +1404,19 @@ bool finaticSequenceRecoveryParserSelfTest()
    malformedResponses[9] =
       "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
       "\"expected_sequence\":7}}} trailing";
+   malformedResponses[10] =
+      "{\"\\u0065rror\":{},\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\"," +
+      "\"details\":{\"expected_sequence\":7}}}";
+   malformedResponses[11] =
+      "{\"error\":{\"\\u0063ode\":\"OTHER\"," +
+      "\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\"," +
+      "\"details\":{\"expected_sequence\":7}}}";
+   malformedResponses[12] =
+      "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\"," +
+      "\"\\u0064etails\":{},\"details\":{\"expected_sequence\":7}}}";
+   malformedResponses[13] =
+      "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
+      "\"\\u0065xpected_sequence\":8,\"expected_sequence\":7}}}";
    for(int caseIndex = 0; caseIndex < ArraySize(malformedResponses); caseIndex++)
      {
       parsedSequence = -1;

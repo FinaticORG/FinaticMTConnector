@@ -19,13 +19,27 @@ MQL_LIMITS = {
 }
 
 
+def _reject_duplicate_members(
+    pairs: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    decoded: dict[str, Any] = {}
+    for key, value in pairs:
+        if key in decoded:
+            raise ValueError(f"duplicate JSON member: {key}")
+        decoded[key] = value
+    return decoded
+
+
 def _parse_recovery_contract(
     response_text: str, maximum_recoverable_sequence: int
 ) -> int | None:
     """Executable contract mirrored by both fail-closed MQL parsers."""
     try:
-        response: Any = json.loads(response_text)
-    except json.JSONDecodeError:
+        response: Any = json.loads(
+            response_text,
+            object_pairs_hook=_reject_duplicate_members,
+        )
+    except (json.JSONDecodeError, ValueError):
         return None
     if not isinstance(response, dict):
         return None
@@ -70,6 +84,7 @@ def test_mql_json_helpers_reject_later_objects_and_non_integer_suffixes(
     source = source_path.read_text(encoding="utf-8")
 
     assert "finaticFindDirectJsonFieldValue" in source
+    assert 'StringFind(key, "\\\\")' in source
     assert "finaticIsExactJsonObject(responseText)" in source
     assert "finaticSkipJsonStringToken" in source
     assert "finaticSkipJsonNumberToken" in source
@@ -115,6 +130,10 @@ def test_actual_mql_parser_self_test_is_a_startup_gate(
     )
     assert 'bad_string\\":\\"\\\\q' in self_test_source
     assert "} trailing" in self_test_source
+    assert r"\\u0065rror" in self_test_source
+    assert r"\\u0063ode" in self_test_source
+    assert r"\\u0064etails" in self_test_source
+    assert r"\\u0065xpected_sequence" in self_test_source
 
 
 @pytest.mark.parametrize("source_path", MQL_SOURCES)
@@ -183,6 +202,30 @@ def test_mql_sequence_limits_keep_persisted_successor_reloadable(
         (
             '{"error":{"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
             '"details":{"expected_sequence":7}}} trailing',
+            None,
+        ),
+        (
+            r'{"\u0065rror":{},"error":{'
+            r'"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
+            r'"details":{"expected_sequence":7}}}',
+            None,
+        ),
+        (
+            r'{"error":{"\u0063ode":"OTHER",'
+            r'"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
+            r'"details":{"expected_sequence":7}}}',
+            None,
+        ),
+        (
+            r'{"error":{"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
+            r'"\u0064etails":{},'
+            r'"details":{"expected_sequence":7}}}',
+            None,
+        ),
+        (
+            r'{"error":{"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
+            r'"details":{"\u0065xpected_sequence":8,'
+            r'"expected_sequence":7}}}',
             None,
         ),
     ],
