@@ -19,7 +19,7 @@ import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, NoReturn
 from urllib import request
 from urllib.error import HTTPError
 from uuid import UUID, uuid4
@@ -34,6 +34,10 @@ logger = logging.getLogger(__name__)
 MAX_PERSISTED_SEQUENCE = (1 << 53) - 1
 MAX_RECOVERABLE_SEQUENCE = MAX_PERSISTED_SEQUENCE - 1
 SEQUENCE_ERROR_CODE = "MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER"
+
+
+def _reject_non_json_constant(_: str) -> NoReturn:
+    raise json.JSONDecodeError("non-standard JSON constant", "", 0)
 
 
 @dataclass(frozen=True, slots=True)
@@ -110,7 +114,10 @@ class BaseReferenceConnector:
         if response.status_code != 409:
             return None
         try:
-            response_body = json.loads(response.body_text)
+            response_body = json.loads(
+                response.body_text,
+                parse_constant=_reject_non_json_constant,
+            )
         except (json.JSONDecodeError, TypeError):
             return None
         if not isinstance(response_body, dict):

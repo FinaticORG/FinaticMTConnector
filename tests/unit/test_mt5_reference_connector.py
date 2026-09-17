@@ -246,3 +246,31 @@ def test_non_object_sequence_409_body_does_not_retry(
     assert response.status_code == 409
     mock_urlopen.assert_called_once()
     assert connector._minimal_webhook_sequence == 0
+
+
+@pytest.mark.parametrize("constant", ["NaN", "Infinity", "-Infinity"])
+def test_non_json_constant_sequence_409_does_not_retry(
+    constant: str,
+) -> None:
+    connector = _build_connector()
+    response_body = (
+        '{"error":{"code":"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER",'
+        f'"details":{{"junk":{constant},"expected_sequence":7}}}}'
+    ).encode()
+    malformed_error = HTTPError(
+        "https://ingest.finatic.dev",
+        409,
+        "Conflict",
+        hdrs=None,
+        fp=BytesIO(response_body),
+    )
+
+    with patch(
+        "finatic_mt_connector.ea_reference.reference_connector_base.request.urlopen",
+        side_effect=malformed_error,
+    ) as mock_urlopen:
+        response = connector.push_minimal_heartbeat()
+
+    assert response.status_code == 409
+    mock_urlopen.assert_called_once()
+    assert connector._minimal_webhook_sequence == 0
