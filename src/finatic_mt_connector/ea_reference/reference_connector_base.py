@@ -36,8 +36,23 @@ MAX_RECOVERABLE_SEQUENCE = MAX_PERSISTED_SEQUENCE - 1
 SEQUENCE_ERROR_CODE = "MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER"
 
 
+class _DuplicateJsonMemberError(ValueError):
+    """Raised when a response contains an ambiguous JSON object."""
+
+
 def _reject_non_json_constant(_: str) -> NoReturn:
     raise json.JSONDecodeError("non-standard JSON constant", "", 0)
+
+
+def _reject_duplicate_json_members(
+    members: list[tuple[str, Any]],
+) -> dict[str, Any]:
+    decoded: dict[str, Any] = {}
+    for key, value in members:
+        if key in decoded:
+            raise _DuplicateJsonMemberError(key)
+        decoded[key] = value
+    return decoded
 
 
 @dataclass(frozen=True, slots=True)
@@ -117,8 +132,9 @@ class BaseReferenceConnector:
             response_body = json.loads(
                 response.body_text,
                 parse_constant=_reject_non_json_constant,
+                object_pairs_hook=_reject_duplicate_json_members,
             )
-        except (json.JSONDecodeError, TypeError):
+        except (json.JSONDecodeError, _DuplicateJsonMemberError, TypeError):
             return None
         if not isinstance(response_body, dict):
             return None
