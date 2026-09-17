@@ -190,6 +190,24 @@ class MTEnvelopeSimulator:
             request_headers=self._headers_for_envelope(envelope_payload),
         )
 
+    def sequence_recovery_case(
+        self, *, expected_sequence: int
+    ) -> MTEnvelopeSimulationCase:
+        """Rebuild a rejected event at the server-provided sequence once."""
+        if expected_sequence < 0:
+            raise ValueError("expected_sequence must be nonnegative")
+        envelope_payload = self._base_envelope(
+            kind=EnvelopeKind.EVENTS,
+            payload={"events": []},
+            sequence=expected_sequence,
+        )
+        self._sequence_value = expected_sequence + 1
+        return MTEnvelopeSimulationCase(
+            case_name="events.sequence_recovery",
+            envelope_payload=envelope_payload,
+            request_headers=self._headers_for_envelope(envelope_payload),
+        )
+
     def stale_timestamp_case(
         self, *, skew_minutes: int = 15
     ) -> MTEnvelopeSimulationCase:
