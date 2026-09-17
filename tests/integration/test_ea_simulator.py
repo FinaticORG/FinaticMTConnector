@@ -44,6 +44,26 @@ def test_simulator_sequence_gap_case_skips_forward() -> None:
     assert sequence_gap_case.envelope_payload["sequence"] >= 3
 
 
+def test_simulator_sequence_recovery_converges_on_expected_value() -> None:
+    simulator = _build_simulator()
+    simulator.build_events_case()
+    gap_case = simulator.sequence_gap_case()
+    expected_sequence = gap_case.envelope_payload["sequence"] - 1
+
+    recovery_case = simulator.sequence_recovery_case(
+        expected_sequence=expected_sequence
+    )
+    next_case = simulator.build_events_case()
+
+    assert recovery_case.envelope_payload["sequence"] == expected_sequence
+    assert next_case.envelope_payload["sequence"] == expected_sequence + 1
+    assert verify_payload_signature(
+        secret_value="integration-test-secret",
+        raw_payload=recovery_case.envelope_payload,
+        signature_value=recovery_case.request_headers["X-Finatic-Signature"],
+    )
+
+
 def test_simulator_stale_timestamp_case_retains_valid_signature() -> None:
     simulator = _build_simulator()
     stale_case = simulator.stale_timestamp_case(skew_minutes=10)
