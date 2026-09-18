@@ -33,8 +33,10 @@ jobs:
       - name: Resolve release tag
         id: release-tag
         shell: bash
+        env:
+          RELEASE_TAG_INPUT: ${{ github.event.inputs.release_tag }}
         run: |
-          release_tag="${{ github.event.inputs.release_tag }}"
+          release_tag="$RELEASE_TAG_INPUT"
           if [[ -z "$release_tag" ]]; then
             echo "Unable to resolve release tag."
             exit 1

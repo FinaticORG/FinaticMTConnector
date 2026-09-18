@@ -23,7 +23,9 @@ concurrency:
 jobs:
   bump-version-and-tag:
     name: Validate reviewed version and create tag
-    if: github.actor != 'github-actions[bot]'
+    if: >-
+      github.actor != 'github-actions[bot]' &&
+      github.ref == 'refs/heads/develop'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
@@ -36,9 +38,20 @@ jobs:
         with:
           python-version: "3.12"
 
+      - name: Verify reviewed develop checkout
+        shell: bash
+        run: |
+          git fetch --no-tags origin develop
+          if [[ "$(git rev-parse HEAD)" != "$(git rev-parse refs/remotes/origin/develop)" ]]; then
+            echo "Release tags must be created from the current remote develop tip."
+            exit 1
+          fi
+
       - name: Calculate next semantic version
         id: next-version
         shell: bash
+        env:
+          BUMP_TYPE: ${{ github.event.inputs.bump }}
         run: |
           latest_tag="$(git tag -l 'v*' --sort=-v:refname | head -n 1)"
           if [[ -z "$latest_tag" ]]; then
@@ -46,7 +59,11 @@ jobs:
           fi
           latest_version="${latest_tag#v}"
           IFS='.' read -r major minor patch <<< "$latest_version"
-          bump_type="${{ github.event.inputs.bump }}"
+          bump_type="$BUMP_TYPE"
+          if [[ ! "$bump_type" =~ ^(patch|minor|major)$ ]]; then
+            echo "Bump type must be patch, minor, or major."
+            exit 1
+          fi
           if [[ "$bump_type" == "major" ]]; then
             next_version="$((major + 1)).0.0"
           elif [[ "$bump_type" == "minor" ]]; then

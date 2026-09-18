@@ -99,6 +99,42 @@ def test_release_paths_publish_complete_checksummed_assets() -> None:
         assert contract_marker in local_release
 
 
+def test_tag_creation_is_bound_to_current_develop_tip() -> None:
+    tag_workflow = (
+        REPO_ROOT / ".github/workflows/auto-version-release.yml"
+    ).read_text(encoding="utf-8")
+
+    assert "github.ref == 'refs/heads/develop'" in tag_workflow
+    assert "git fetch --no-tags origin develop" in tag_workflow
+    assert "git rev-parse refs/remotes/origin/develop" in tag_workflow
+    assert tag_workflow.index("Verify reviewed develop checkout") < (
+        tag_workflow.index("Create and push release tag")
+    )
+
+
+def test_dispatch_inputs_are_validated_via_environment_variables() -> None:
+    tag_workflow = (
+        REPO_ROOT / ".github/workflows/auto-version-release.yml"
+    ).read_text(encoding="utf-8")
+    build_workflow = (REPO_ROOT / ".github/workflows/ea-build.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "BUMP_TYPE: ${{ github.event.inputs.bump }}" in tag_workflow
+    assert 'bump_type="$BUMP_TYPE"' in tag_workflow
+    assert 'bump_type="${{ github.event.inputs.bump }}"' not in tag_workflow
+
+    assert (
+        "RELEASE_TAG_INPUT: ${{ github.event.inputs.release_tag }}"
+        in build_workflow
+    )
+    assert 'release_tag="$RELEASE_TAG_INPUT"' in build_workflow
+    assert (
+        'release_tag="${{ github.event.inputs.release_tag }}"'
+        not in build_workflow
+    )
+
+
 def _assert_stale_outputs_cannot_satisfy_compile(
     release_path: str,
     *,
