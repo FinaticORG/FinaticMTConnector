@@ -13,18 +13,30 @@ input int    FinaticSecretVersion = 1;
 input bool   FinaticSignEnvelopes = true;
 input int    FinaticHistoryMaxRows = 80;
 
+#define FINATIC_MAX_PERSISTED_SEQUENCE 2147483647
+#define FINATIC_MAX_RECOVERABLE_SEQUENCE 2147483646
+
 int    g_ingestSequence = 0;
+int    g_sequenceRecoveryCount = 0;
 bool   g_ingestConfigurationValid = false;
 string g_ingestBaseUrl = "";
 string g_webRequestAllowlistOrigin = "";
+string g_sequenceStateKey = "";
 
 int OnInit()
   {
+   if(!finaticSequenceRecoveryParserSelfTest())
+     {
+      Print("Finatic sequence recovery parser self-test failed; connector disabled.");
+      return(INIT_FAILED);
+     }
    g_ingestConfigurationValid = finaticValidateIngestConfiguration();
    if(!g_ingestConfigurationValid)
       return(INIT_FAILED);
    g_ingestBaseUrl = finaticTrimBaseUrl(FinaticIngestUrl);
    g_webRequestAllowlistOrigin = finaticExtractWebRequestAllowlistOrigin(g_ingestBaseUrl);
+   g_sequenceStateKey = "FINATIC_NEXT_SEQUENCE_" + FinaticConnectorId;
+   finaticRestoreIngestSequence();
    if(FinaticSnapshotRequired)
       finaticPushSnapshot();
    EventSetTimer(FinaticHeartbeatSeconds);
@@ -144,6 +156,31 @@ string finaticTrimBaseUrl(string baseUrl)
    while(StringLen(trimmed) > 0 && StringGetCharacter(trimmed, StringLen(trimmed) - 1) == '/')
       trimmed = StringSubstr(trimmed, 0, StringLen(trimmed) - 1);
    return(trimmed);
+  }
+
+void finaticRestoreIngestSequence()
+  {
+   if(StringLen(g_sequenceStateKey) < 1 || !GlobalVariableCheck(g_sequenceStateKey))
+      return;
+   double storedValue = GlobalVariableGet(g_sequenceStateKey);
+   if(storedValue < 0 || storedValue > FINATIC_MAX_PERSISTED_SEQUENCE || MathFloor(storedValue) != storedValue)
+     {
+      Print("Finatic sequence state invalid; starting at zero for safe recovery.");
+      return;
+     }
+   g_ingestSequence = (int)storedValue;
+  }
+
+void finaticPersistIngestSequence()
+  {
+   if(StringLen(g_sequenceStateKey) < 1)
+      return;
+   if(!GlobalVariableSet(g_sequenceStateKey, (double)g_ingestSequence))
+     {
+      Print("Finatic sequence state persistence failed.");
+      return;
+     }
+   GlobalVariablesFlush();
   }
 
 string finaticBuildRouteUrl(string routeSuffix)
@@ -524,19 +561,329 @@ string finaticExtractBalancedJsonObject(string text, int startPosition)
    return("");
   }
 
+int finaticSkipJsonWhitespace(string text, int position)
+  {
+   while(position < StringLen(text))
+     {
+      int character = StringGetCharacter(text, position);
+      if(character != ' ' && character != '\t' && character != '\r' && character != '\n')
+         break;
+      position++;
+     }
+   return(position);
+  }
+
+bool finaticIsJsonDigit(int character)
+  {
+   return(character >= '0' && character <= '9');
+  }
+
+bool finaticIsJsonHexDigit(int character)
+  {
+   return(
+      (character >= '0' && character <= '9') ||
+      (character >= 'a' && character <= 'f') ||
+      (character >= 'A' && character <= 'F')
+   );
+  }
+
+int finaticSkipJsonStringToken(string text, int quotePosition)
+  {
+   if(quotePosition >= StringLen(text) || StringGetCharacter(text, quotePosition) != '"')
+      return(-1);
+   for(int stringIndex = quotePosition + 1; stringIndex < StringLen(text); stringIndex++)
+     {
+      int stringCharacter = StringGetCharacter(text, stringIndex);
+      if(stringCharacter == '"')
+         return(stringIndex + 1);
+      if(stringCharacter < 32)
+         return(-1);
+      if(stringCharacter != '\\')
+         continue;
+      stringIndex++;
+      if(stringIndex >= StringLen(text))
+         return(-1);
+      int escapeCharacter = StringGetCharacter(text, stringIndex);
+      if(
+         escapeCharacter == '"' || escapeCharacter == '\\' || escapeCharacter == '/' ||
+         escapeCharacter == 'b' || escapeCharacter == 'f' || escapeCharacter == 'n' ||
+         escapeCharacter == 'r' || escapeCharacter == 't'
+      )
+         continue;
+      if(escapeCharacter != 'u' || stringIndex + 4 >= StringLen(text))
+         return(-1);
+      for(int unicodeOffset = 1; unicodeOffset <= 4; unicodeOffset++)
+        {
+         int hexCharacter = StringGetCharacter(text, stringIndex + unicodeOffset);
+         if(!finaticIsJsonHexDigit(hexCharacter))
+            return(-1);
+        }
+      stringIndex += 4;
+     }
+   return(-1);
+  }
+
+int finaticSkipJsonNumberToken(string text, int numberPosition)
+  {
+   int numberLength = StringLen(text);
+   int numberIndex = numberPosition;
+   if(numberIndex < numberLength && StringGetCharacter(text, numberIndex) == '-')
+      numberIndex++;
+   if(numberIndex >= numberLength)
+      return(-1);
+   int firstDigit = StringGetCharacter(text, numberIndex);
+   if(firstDigit == '0')
+      numberIndex++;
+   else if(firstDigit >= '1' && firstDigit <= '9')
+     {
+      numberIndex++;
+      while(numberIndex < numberLength && finaticIsJsonDigit(StringGetCharacter(text, numberIndex)))
+         numberIndex++;
+     }
+   else
+      return(-1);
+   if(numberIndex < numberLength && StringGetCharacter(text, numberIndex) == '.')
+     {
+      numberIndex++;
+      int fractionStart = numberIndex;
+      while(numberIndex < numberLength && finaticIsJsonDigit(StringGetCharacter(text, numberIndex)))
+         numberIndex++;
+      if(numberIndex == fractionStart)
+         return(-1);
+     }
+   if(
+      numberIndex < numberLength &&
+      (StringGetCharacter(text, numberIndex) == 'e' || StringGetCharacter(text, numberIndex) == 'E')
+   )
+     {
+      numberIndex++;
+      if(
+         numberIndex < numberLength &&
+         (StringGetCharacter(text, numberIndex) == '+' || StringGetCharacter(text, numberIndex) == '-')
+      )
+         numberIndex++;
+      int exponentStart = numberIndex;
+      while(numberIndex < numberLength && finaticIsJsonDigit(StringGetCharacter(text, numberIndex)))
+         numberIndex++;
+      if(numberIndex == exponentStart)
+         return(-1);
+     }
+   return(numberIndex);
+  }
+
+int finaticSkipJsonValueAtDepth(string text, int valuePosition, int depth)
+  {
+   if(depth > 32)
+      return(-1);
+   int position = finaticSkipJsonWhitespace(text, valuePosition);
+   if(position >= StringLen(text))
+      return(-1);
+   int firstCharacter = StringGetCharacter(text, position);
+   if(firstCharacter == '"')
+      return(finaticSkipJsonStringToken(text, position));
+   if(firstCharacter == '{')
+     {
+      int objectPosition = finaticSkipJsonWhitespace(text, position + 1);
+      if(objectPosition < StringLen(text) && StringGetCharacter(text, objectPosition) == '}')
+         return(objectPosition + 1);
+      while(objectPosition < StringLen(text))
+        {
+         int objectKeyEnd = finaticSkipJsonStringToken(text, objectPosition);
+         if(objectKeyEnd < 0)
+            return(-1);
+         int objectColonPosition = finaticSkipJsonWhitespace(text, objectKeyEnd);
+         if(
+            objectColonPosition >= StringLen(text) ||
+            StringGetCharacter(text, objectColonPosition) != ':'
+         )
+            return(-1);
+         int objectValueEnd = finaticSkipJsonValueAtDepth(text, objectColonPosition + 1, depth + 1);
+         if(objectValueEnd < 0)
+            return(-1);
+         objectPosition = finaticSkipJsonWhitespace(text, objectValueEnd);
+         if(objectPosition >= StringLen(text))
+            return(-1);
+         int objectDelimiter = StringGetCharacter(text, objectPosition);
+         if(objectDelimiter == '}')
+            return(objectPosition + 1);
+         if(objectDelimiter != ',')
+            return(-1);
+         objectPosition = finaticSkipJsonWhitespace(text, objectPosition + 1);
+         if(objectPosition >= StringLen(text) || StringGetCharacter(text, objectPosition) == '}')
+            return(-1);
+        }
+      return(-1);
+     }
+   if(firstCharacter == '[')
+     {
+      int arrayPosition = finaticSkipJsonWhitespace(text, position + 1);
+      if(arrayPosition < StringLen(text) && StringGetCharacter(text, arrayPosition) == ']')
+         return(arrayPosition + 1);
+      while(arrayPosition < StringLen(text))
+        {
+         int arrayValueEnd = finaticSkipJsonValueAtDepth(text, arrayPosition, depth + 1);
+         if(arrayValueEnd < 0)
+            return(-1);
+         arrayPosition = finaticSkipJsonWhitespace(text, arrayValueEnd);
+         if(arrayPosition >= StringLen(text))
+            return(-1);
+         int arrayDelimiter = StringGetCharacter(text, arrayPosition);
+         if(arrayDelimiter == ']')
+            return(arrayPosition + 1);
+         if(arrayDelimiter != ',')
+            return(-1);
+         arrayPosition = finaticSkipJsonWhitespace(text, arrayPosition + 1);
+         if(arrayPosition >= StringLen(text) || StringGetCharacter(text, arrayPosition) == ']')
+            return(-1);
+        }
+      return(-1);
+     }
+   if(StringSubstr(text, position, 4) == "true" || StringSubstr(text, position, 4) == "null")
+      return(position + 4);
+   if(StringSubstr(text, position, 5) == "false")
+      return(position + 5);
+   return(finaticSkipJsonNumberToken(text, position));
+  }
+
+int finaticSkipJsonValue(string text, int valuePosition)
+  {
+   return(finaticSkipJsonValueAtDepth(text, valuePosition, 0));
+  }
+
+bool finaticFindDirectJsonFieldValue(
+   string jsonObjectText,
+   string fieldName,
+   int &valuePosition
+)
+  {
+   int position = finaticSkipJsonWhitespace(jsonObjectText, 0);
+   if(position >= StringLen(jsonObjectText) || StringGetCharacter(jsonObjectText, position) != '{')
+      return(false);
+   position++;
+   bool fieldFound = false;
+   int fieldPosition = -1;
+   while(position < StringLen(jsonObjectText))
+     {
+      position = finaticSkipJsonWhitespace(jsonObjectText, position);
+      if(position >= StringLen(jsonObjectText))
+         return(false);
+      if(StringGetCharacter(jsonObjectText, position) == '}')
+        {
+         int trailingPosition = finaticSkipJsonWhitespace(jsonObjectText, position + 1);
+         if(trailingPosition != StringLen(jsonObjectText))
+            return(false);
+         if(fieldFound)
+            valuePosition = fieldPosition;
+         return(fieldFound);
+        }
+      if(StringGetCharacter(jsonObjectText, position) != '"')
+         return(false);
+      int keyStart = position + 1;
+      int keyTokenEnd = finaticSkipJsonStringToken(jsonObjectText, position);
+      if(keyTokenEnd < 0)
+         return(false);
+      string key = StringSubstr(jsonObjectText, keyStart, keyTokenEnd - keyStart - 1);
+      if(StringFind(key, "\\") >= 0)
+         return(false);
+      int colonPosition = finaticSkipJsonWhitespace(jsonObjectText, keyTokenEnd);
+      if(colonPosition >= StringLen(jsonObjectText) || StringGetCharacter(jsonObjectText, colonPosition) != ':')
+         return(false);
+      int directValuePosition = finaticSkipJsonWhitespace(jsonObjectText, colonPosition + 1);
+      int valueEnd = finaticSkipJsonValue(jsonObjectText, directValuePosition);
+      if(valueEnd < 0)
+         return(false);
+      if(key == fieldName)
+        {
+         if(fieldFound)
+            return(false);
+         fieldFound = true;
+         fieldPosition = directValuePosition;
+        }
+      position = finaticSkipJsonWhitespace(jsonObjectText, valueEnd);
+      if(position >= StringLen(jsonObjectText))
+         return(false);
+      int delimiter = StringGetCharacter(jsonObjectText, position);
+      if(delimiter == '}')
+        {
+         int trailingPositionAfterField = finaticSkipJsonWhitespace(jsonObjectText, position + 1);
+         if(trailingPositionAfterField != StringLen(jsonObjectText))
+            return(false);
+         if(fieldFound)
+            valuePosition = fieldPosition;
+         return(fieldFound);
+        }
+      if(delimiter != ',')
+         return(false);
+      position++;
+     }
+   return(false);
+  }
+
+bool finaticIsExactJsonObject(string text)
+  {
+   int objectStart = finaticSkipJsonWhitespace(text, 0);
+   if(objectStart >= StringLen(text) || StringGetCharacter(text, objectStart) != '{')
+      return(false);
+   int objectEnd = finaticSkipJsonValue(text, objectStart);
+   if(objectEnd < 0)
+      return(false);
+   return(finaticSkipJsonWhitespace(text, objectEnd) == StringLen(text));
+  }
+
 string finaticExtractJsonObjectField(string jsonObjectText, string fieldName)
   {
-   string needle = "\"" + fieldName + "\"";
-   int needlePosition = StringFind(jsonObjectText, needle, 0);
-   if(needlePosition < 0)
+   int objectStart = -1;
+   if(!finaticFindDirectJsonFieldValue(jsonObjectText, fieldName, objectStart))
       return("");
-   int colonPosition = StringFind(jsonObjectText, ":", needlePosition + StringLen(needle));
-   if(colonPosition < 0)
+   if(objectStart >= StringLen(jsonObjectText) || StringGetCharacter(jsonObjectText, objectStart) != '{')
       return("");
-   int objectStart = StringFind(jsonObjectText, "{", colonPosition);
-   if(objectStart < 0)
+   int objectEnd = finaticSkipJsonValue(jsonObjectText, objectStart);
+   if(objectEnd < 0)
       return("");
-   return(finaticExtractBalancedJsonObject(jsonObjectText, objectStart));
+   return(StringSubstr(jsonObjectText, objectStart, objectEnd - objectStart));
+  }
+
+bool finaticExtractJsonNonnegativeIntegerField(
+   string jsonObjectText,
+   string fieldName,
+   long maximumValue,
+   long &fieldValue
+)
+  {
+   int valuePosition = -1;
+   if(!finaticFindDirectJsonFieldValue(jsonObjectText, fieldName, valuePosition))
+      return(false);
+   if(valuePosition >= StringLen(jsonObjectText))
+      return(false);
+
+   long parsedValue = 0;
+   int digitCount = 0;
+   bool hasLeadingZero = StringGetCharacter(jsonObjectText, valuePosition) == '0';
+   while(valuePosition < StringLen(jsonObjectText))
+     {
+      int character = StringGetCharacter(jsonObjectText, valuePosition);
+      if(character < '0' || character > '9')
+         break;
+      int digitValue = character - '0';
+      if(parsedValue > (maximumValue - digitValue) / 10)
+         return(false);
+      parsedValue = parsedValue * 10 + digitValue;
+      digitCount++;
+      valuePosition++;
+     }
+   if(digitCount == 0)
+      return(false);
+   if(hasLeadingZero && digitCount > 1)
+      return(false);
+
+   valuePosition = finaticSkipJsonWhitespace(jsonObjectText, valuePosition);
+   if(valuePosition >= StringLen(jsonObjectText))
+      return(false);
+   int delimiter = StringGetCharacter(jsonObjectText, valuePosition);
+   if(delimiter != ',' && delimiter != '}')
+      return(false);
+   fieldValue = parsedValue;
+   return(true);
   }
 
 double finaticExtractJsonDoubleField(string jsonObjectText, string fieldName, double defaultValue)
@@ -805,17 +1152,23 @@ void finaticDrainPendingCommands(string heartbeatResponseBody)
 
 string finaticExtractJsonStringField(string jsonObjectText, string fieldName)
   {
-   string needle = "\"" + fieldName + "\"";
-   int needlePosition = StringFind(jsonObjectText, needle, 0);
-   if(needlePosition < 0)
+   int valuePosition = -1;
+   if(!finaticFindDirectJsonFieldValue(jsonObjectText, fieldName, valuePosition))
       return("");
-   int firstQuote = StringFind(jsonObjectText, "\"", needlePosition + StringLen(needle));
-   if(firstQuote < 0)
+   if(valuePosition >= StringLen(jsonObjectText) || StringGetCharacter(jsonObjectText, valuePosition) != '"')
       return("");
-   int closingQuote = StringFind(jsonObjectText, "\"", firstQuote + 1);
-   if(closingQuote < 0)
-      return("");
-   return(StringSubstr(jsonObjectText, firstQuote + 1, closingQuote - firstQuote - 1));
+   for(int closingQuote = valuePosition + 1; closingQuote < StringLen(jsonObjectText); closingQuote++)
+     {
+      int character = StringGetCharacter(jsonObjectText, closingQuote);
+      if(character == '\\')
+        {
+         closingQuote++;
+         continue;
+        }
+      if(character == '"')
+         return(StringSubstr(jsonObjectText, valuePosition + 1, closingQuote - valuePosition - 1));
+     }
+   return("");
   }
 
 void finaticPostCommandResult(string commandIdentifier)
@@ -910,13 +1263,18 @@ string finaticHmacSha256Hex(string secretValue, string messageValue)
    return(hexResult);
   }
 
-string finaticPostMinimalRoute(string routeSuffix, string innerPayloadJson)
+int finaticPostMinimalRouteAttempt(
+   string routeSuffix,
+   string innerPayloadJson,
+   int sequenceValue,
+   string &responseText
+)
   {
    if(StringLen(g_ingestBaseUrl) < 8)
-      return("");
+      return(-1);
    string requestUrl = finaticBuildRouteUrl(routeSuffix);
    string canonicalBody = finaticBuildCanonicalPayloadJson(
-      g_ingestSequence,
+      sequenceValue,
       FinaticSecretVersion,
       FinaticPlatform,
       innerPayloadJson
@@ -957,9 +1315,7 @@ string finaticPostMinimalRoute(string routeSuffix, string innerPayloadJson)
          "Finatic WebRequest failed route=",
          routeSuffix,
          " err=",
-         lastErrorCode,
-         " url=",
-         requestUrl
+         lastErrorCode
       );
       if(lastErrorCode == 4060)
          Print(
@@ -975,14 +1331,152 @@ string finaticPostMinimalRoute(string routeSuffix, string innerPayloadJson)
             g_webRequestAllowlistOrigin,
             "/docs — broker-branded MT4 builds may block external WebRequest entirely."
          );
-      return("");
+      return(-1);
      }
-   string responseText = CharArrayToString(responseData, 0, WHOLE_ARRAY);
-   if(httpCode < 200 || httpCode > 299)
+   responseText = CharArrayToString(responseData, 0, WHOLE_ARRAY);
+   return(httpCode);
+  }
+
+bool finaticTryExtractSequenceRecovery(string responseText, int &expectedSequence)
+  {
+   if(!finaticIsExactJsonObject(responseText))
+      return(false);
+   string errorObject = finaticExtractJsonObjectField(responseText, "error");
+   if(StringLen(errorObject) < 2)
+      return(false);
+   string errorCode = finaticExtractJsonStringField(errorObject, "code");
+   if(errorCode != "MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER")
+      return(false);
+   string detailsObject = finaticExtractJsonObjectField(errorObject, "details");
+   if(StringLen(detailsObject) < 2)
+      return(false);
+   long parsedSequence = -1;
+   if(!finaticExtractJsonNonnegativeIntegerField(
+      detailsObject,
+      "expected_sequence",
+      FINATIC_MAX_RECOVERABLE_SEQUENCE,
+      parsedSequence
+   ))
+      return(false);
+   expectedSequence = (int)parsedSequence;
+   return(true);
+  }
+
+bool finaticSequenceRecoveryParserSelfTest()
+  {
+   int parsedSequence = -1;
+   string validResponse =
+      "{\"meta\":[true,false,null,-1.5e+2,{\"ok\":\"yes\"}],\"error\":{" +
+      "\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
+      "\"expected_sequence\":7,\"last_acknowledged_sequence\":6}}}";
+   if(!finaticTryExtractSequenceRecovery(validResponse, parsedSequence) || parsedSequence != 7)
+      return(false);
+
+   string malformedResponses[14];
+   malformedResponses[0] =
+      "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
+      "\"junk\":bogus,\"expected_sequence\":7}}}";
+   malformedResponses[1] =
+      "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
+      "\"expected_sequence\":7}garbage}}";
+   malformedResponses[2] =
+      "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
+      "\"expected_sequence\":7}}garbage}";
+   malformedResponses[3] =
+      "{\"error\":{\"code\":null,\"later\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\"," +
+      "\"details\":{\"expected_sequence\":7}}}";
+   malformedResponses[4] =
+      "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
+      "\"nested\":{\"expected_sequence\":7}}}}";
+   malformedResponses[5] =
+      "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
+      "\"expected_sequence\":7,}}}";
+   malformedResponses[6] =
+      "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
+      "\"expected_sequence\":7}},\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\"," +
+      "\"details\":{\"expected_sequence\":8}}}";
+   malformedResponses[7] =
+      "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
+      "\"expected_sequence\":7,\"expected_sequence\":8}}}";
+   malformedResponses[8] =
+      "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
+      "\"expected_sequence\":7}},\"bad_string\":\"\\q\"}";
+   malformedResponses[9] =
+      "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
+      "\"expected_sequence\":7}}} trailing";
+   malformedResponses[10] =
+      "{\"\\u0065rror\":{},\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\"," +
+      "\"details\":{\"expected_sequence\":7}}}";
+   malformedResponses[11] =
+      "{\"error\":{\"\\u0063ode\":\"OTHER\"," +
+      "\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\"," +
+      "\"details\":{\"expected_sequence\":7}}}";
+   malformedResponses[12] =
+      "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\"," +
+      "\"\\u0064etails\":{},\"details\":{\"expected_sequence\":7}}}";
+   malformedResponses[13] =
+      "{\"error\":{\"code\":\"MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER\",\"details\":{" +
+      "\"\\u0065xpected_sequence\":8,\"expected_sequence\":7}}}";
+   for(int caseIndex = 0; caseIndex < ArraySize(malformedResponses); caseIndex++)
      {
-      Print("Finatic HTTP ", httpCode, " route=", routeSuffix, " body=", responseText);
+      parsedSequence = -1;
+      if(finaticTryExtractSequenceRecovery(malformedResponses[caseIndex], parsedSequence))
+         return(false);
+     }
+   return(true);
+  }
+
+string finaticPostMinimalRoute(string routeSuffix, string innerPayloadJson)
+  {
+   if(g_ingestSequence > FINATIC_MAX_RECOVERABLE_SEQUENCE)
+     {
+      Print("Finatic sequence exhausted; refusing request before send.");
       return("");
      }
-   g_ingestSequence++;
-   return(responseText);
+   string responseText = "";
+   int httpCode = finaticPostMinimalRouteAttempt(
+      routeSuffix,
+      innerPayloadJson,
+      g_ingestSequence,
+      responseText
+   );
+   if(httpCode >= 200 && httpCode <= 299)
+     {
+      g_ingestSequence++;
+      finaticPersistIngestSequence();
+      return(responseText);
+     }
+
+   int expectedSequence = -1;
+   if(httpCode == 409 && finaticTryExtractSequenceRecovery(responseText, expectedSequence))
+     {
+      g_sequenceRecoveryCount++;
+      Print(
+         "Finatic sequence recovery route=",
+         routeSuffix,
+         " count=",
+         g_sequenceRecoveryCount,
+         " duplicate_installation_possible=",
+         (g_sequenceRecoveryCount > 1)
+      );
+      g_ingestSequence = expectedSequence;
+      string retryResponseText = "";
+      int retryHttpCode = finaticPostMinimalRouteAttempt(
+         routeSuffix,
+         innerPayloadJson,
+         expectedSequence,
+         retryResponseText
+      );
+      if(retryHttpCode >= 200 && retryHttpCode <= 299)
+        {
+         g_ingestSequence = expectedSequence + 1;
+         finaticPersistIngestSequence();
+         return(retryResponseText);
+        }
+      Print("Finatic sequence recovery failed route=", routeSuffix, " status=", retryHttpCode);
+      return("");
+     }
+
+   Print("Finatic HTTP failure route=", routeSuffix, " status=", httpCode);
+   return("");
   }
