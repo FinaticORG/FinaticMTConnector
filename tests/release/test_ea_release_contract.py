@@ -2,9 +2,14 @@
 
 from __future__ import annotations
 
+import os
 import re
+import shutil
+import subprocess
 import tomllib
 from pathlib import Path
+
+import pytest
 
 REPO_ROOT = Path(__file__).parents[2]
 MT4_SOURCE = REPO_ROOT / (
@@ -25,6 +30,7 @@ RELEASE_EVIDENCE = {
     "build-provenance.txt",
     "release-notes.md",
 }
+NATIVE_GUARDS = REPO_ROOT / "scripts/release/native_command_guards.ps1"
 
 
 def _project_version() -> str:
@@ -87,6 +93,7 @@ def test_release_paths_publish_complete_checksummed_assets() -> None:
         "draft: true",
         "0 errors and 0 warnings",
         "checksums.sha256",
+        "overwrite_files: false",
     ):
         assert contract_marker in workflow
 
@@ -95,6 +102,8 @@ def test_release_paths_publish_complete_checksummed_assets() -> None:
         "must exist and resolve to HEAD",
         "0 errors and 0 warnings",
         "checksums.sha256",
+        "Invoke-CheckedNativeCommand",
+        "Assert-GitHubReleaseAbsent",
     ):
         assert contract_marker in local_release
 
@@ -208,3 +217,119 @@ def test_preexisting_local_outputs_are_removed_and_cannot_be_reused() -> None:
     assert "Resolve-CompiledBinaryPath" not in local_release
     assert "-Filter $BinaryFilename" not in local_release
     assert ".AddMinutes(-1)" not in local_release
+
+
+def _run_guard_harness(
+    tmp_path: Path,
+    *,
+    fake_native: str,
+    command: str,
+    executable_name: str = "gh",
+) -> subprocess.CompletedProcess[str]:
+    pwsh = shutil.which("pwsh")
+    if pwsh is None:
+        assert os.environ.get("CI") != "true", (
+            "PowerShell Core is required in CI to exercise native exit behavior"
+        )
+        pytest.skip(
+            "PowerShell Core is required for native-command guard tests"
+        )
+
+    bin_directory = tmp_path / "bin"
+    bin_directory.mkdir()
+    executable_path = bin_directory / executable_name
+    executable_path.write_text(fake_native, encoding="utf-8")
+    executable_path.chmod(0o755)
+
+    guard_path = str(NATIVE_GUARDS).replace("'", "''")
+    bin_path = str(bin_directory).replace("'", "''")
+    harness = (
+        f"$env:PATH = '{bin_path}:' + $env:PATH; . '{guard_path}'; {command}"
+    )
+    return subprocess.run(
+        [pwsh, "-NoLogo", "-NoProfile", "-Command", harness],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+
+@pytest.mark.parametrize(
+    ("fake_gh", "expected_return_code"),
+    [
+        ("#!/bin/sh\necho 'gh: Not Found (HTTP 404)' >&2\nexit 1\n", 0),
+        ("#!/bin/sh\necho 'HTTP/2.0 200 OK'\nexit 0\n", 1),
+        (
+            "#!/bin/sh\necho 'gh: API rate limit exceeded (HTTP 403)' >&2\nexit 1\n",
+            1,
+        ),
+    ],
+)
+def test_release_absence_probe_classifies_native_exit_behavior(
+    tmp_path: Path,
+    fake_gh: str,
+    expected_return_code: int,
+) -> None:
+    result = _run_guard_harness(
+        tmp_path,
+        fake_native=fake_gh,
+        command=(
+            "Assert-GitHubReleaseAbsent "
+            "-Repository 'FinaticORG/FinaticMTConnector' "
+            "-ReleaseTag 'v1.0.1'"
+        ),
+    )
+
+    assert result.returncode == expected_return_code, result.stderr
+
+
+def test_checked_native_command_rejects_failed_release_write(
+    tmp_path: Path,
+) -> None:
+    result = _run_guard_harness(
+        tmp_path,
+        fake_native="#!/bin/sh\necho 'publish failed' >&2\nexit 9\n",
+        command=(
+            "Invoke-CheckedNativeCommand -Command 'gh' "
+            "-Arguments @('release', 'create', 'v1.0.1') "
+            "-FailureMessage 'Unable to publish release.'"
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "Unable to publish release. Exit code: 9" in result.stderr
+
+
+def test_checked_native_command_rejects_failed_ci_validation(
+    tmp_path: Path,
+) -> None:
+    result = _run_guard_harness(
+        tmp_path,
+        executable_name="uv",
+        fake_native="#!/bin/sh\necho 'ci failed' >&2\nexit 17\n",
+        command=(
+            "Invoke-CheckedNativeCommand -Command 'uv' "
+            "-Arguments @('run', 'poe', 'ci-fast') "
+            "-FailureMessage 'Repository CI validation failed.'"
+        ),
+    )
+
+    assert result.returncode != 0
+    assert "Repository CI validation failed. Exit code: 17" in result.stderr
+
+
+def test_local_release_checks_ci_and_publish_native_commands() -> None:
+    local_release = (REPO_ROOT / "scripts/release/local_release.ps1").read_text(
+        encoding="utf-8"
+    )
+
+    assert re.search(
+        r'Invoke-CheckedNativeCommand\s+`\s*\n\s*-Command "uv"\s+`'
+        r'\s*\n\s*-Arguments @\("run", "poe", "ci-fast"\)',
+        local_release,
+    )
+    assert re.search(
+        r'Invoke-CheckedNativeCommand\s+`\s*\n\s*-Command "gh"\s+`'
+        r"\s*\n\s*-Arguments \$releaseArguments",
+        local_release,
+    )

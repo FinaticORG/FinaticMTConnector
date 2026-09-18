@@ -83,11 +83,13 @@ jobs:
         shell: pwsh
         env:
           GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.release-tag.outputs.release_tag }}
         run: |
-          gh api "/repos/${{ github.repository }}/releases/tags/${{ steps.release-tag.outputs.release_tag }}" *> $null
-          if ($LASTEXITCODE -eq 0) {
-            throw "Release ${{ steps.release-tag.outputs.release_tag }} already exists and will not be overwritten."
-          }
+          . "$env:GITHUB_WORKSPACE\scripts\release\native_command_guards.ps1"
+          Assert-GitHubReleaseAbsent `
+            -Repository $env:RELEASE_REPOSITORY `
+            -ReleaseTag $env:RELEASE_TAG
 
       - name: Discover MetaEditor executables
         id: discover-metaeditors
@@ -305,6 +307,7 @@ jobs:
         with:
           tag_name: ${{ steps.release-tag.outputs.release_tag }}
           draft: true
+          overwrite_files: false
           generate_release_notes: true
           body_path: ${{ env.DIST_DIRECTORY }}/release-notes.md
           files: |

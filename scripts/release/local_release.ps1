@@ -6,6 +6,8 @@ param(
 
 $ErrorActionPreference = "Stop"
 
+. (Join-Path $PSScriptRoot "native_command_guards.ps1")
+
 function Get-ProjectVersion {
   param([string]$PyprojectPath)
 
@@ -94,23 +96,33 @@ function Assert-ReleaseBundle {
 function Publish-ReleaseBundle {
   param([string]$DistDirectory, [string]$ReleaseTag)
 
-  gh release view $ReleaseTag --repo FinaticORG/FinaticMTConnector *> $null
-  if ($LASTEXITCODE -eq 0) {
-    throw "GitHub Release $ReleaseTag already exists; immutable releases are not overwritten."
-  }
-  gh release create $ReleaseTag `
-    "$DistDirectory\FinaticMT4ConnectorEA.ex4" `
-    "$DistDirectory\FinaticMT5ConnectorEA.ex5" `
-    "$DistDirectory\FinaticMT4ConnectorEA.mq4" `
-    "$DistDirectory\FinaticMT5ConnectorEA.mq5" `
-    "$DistDirectory\FinaticMT4ConnectorEA.build.log" `
-    "$DistDirectory\FinaticMT5ConnectorEA.build.log" `
-    "$DistDirectory\build-provenance.txt" `
-    "$DistDirectory\checksums.sha256" `
-    "$DistDirectory\release-notes.md" `
-    --repo FinaticORG/FinaticMTConnector `
-    --title "Finatic MT Connector $ReleaseTag" `
-    --notes-file "$DistDirectory\release-notes.md"
+  Assert-GitHubReleaseAbsent `
+    -Repository "FinaticORG/FinaticMTConnector" `
+    -ReleaseTag $ReleaseTag
+  $releaseArguments = @(
+    "release"
+    "create"
+    $ReleaseTag
+    "$DistDirectory\FinaticMT4ConnectorEA.ex4"
+    "$DistDirectory\FinaticMT5ConnectorEA.ex5"
+    "$DistDirectory\FinaticMT4ConnectorEA.mq4"
+    "$DistDirectory\FinaticMT5ConnectorEA.mq5"
+    "$DistDirectory\FinaticMT4ConnectorEA.build.log"
+    "$DistDirectory\FinaticMT5ConnectorEA.build.log"
+    "$DistDirectory\build-provenance.txt"
+    "$DistDirectory\checksums.sha256"
+    "$DistDirectory\release-notes.md"
+    "--repo"
+    "FinaticORG/FinaticMTConnector"
+    "--title"
+    "Finatic MT Connector $ReleaseTag"
+    "--notes-file"
+    "$DistDirectory\release-notes.md"
+  )
+  Invoke-CheckedNativeCommand `
+    -Command "gh" `
+    -Arguments $releaseArguments `
+    -FailureMessage "Unable to publish GitHub Release $ReleaseTag."
 }
 
 function Resolve-MetaEditorPath {
@@ -202,16 +214,29 @@ function Resolve-ExpertsDirectoryPath {
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $repoRoot
 
-$workingTreeChanges = git status --porcelain
+$workingTreeChanges = Invoke-CheckedNativeOutput `
+  -Command "git" `
+  -Arguments @("status", "--porcelain") `
+  -FailureMessage "Unable to inspect the release worktree."
 if ($workingTreeChanges) {
   throw "Release builds require a clean immutable-tag worktree."
 }
 
 $projectVersion = Get-ProjectVersion -PyprojectPath (Join-Path $repoRoot "pyproject.toml")
 $releaseTag = "v$projectVersion"
-$releaseCommit = git rev-parse HEAD
-$tagCommit = git rev-parse "$releaseTag^{commit}" 2>$null
-if ($LASTEXITCODE -ne 0 -or $tagCommit -ne $releaseCommit) {
+$releaseCommit = Invoke-CheckedNativeOutput `
+  -Command "git" `
+  -Arguments @("rev-parse", "HEAD") `
+  -FailureMessage "Unable to resolve the release commit."
+try {
+  $tagCommit = Invoke-CheckedNativeOutput `
+    -Command "git" `
+    -Arguments @("rev-parse", "$releaseTag^{commit}") `
+    -FailureMessage "Unable to resolve release tag $releaseTag."
+} catch {
+  throw "Release tag $releaseTag must exist and resolve to HEAD ($releaseCommit). $($_.Exception.Message)"
+}
+if ($tagCommit -ne $releaseCommit) {
   throw "Release tag $releaseTag must exist and resolve to HEAD ($releaseCommit)."
 }
 $distDirectory = Join-Path $repoRoot "dist\ea"
@@ -224,7 +249,10 @@ if ($Publish) {
 }
 
 Write-Host "Building immutable release $releaseTag at $releaseCommit"
-uv run poe ci-fast
+Invoke-CheckedNativeCommand `
+  -Command "uv" `
+  -Arguments @("run", "poe", "ci-fast") `
+  -FailureMessage "Repository CI validation failed; release compilation is blocked."
 
 $mt4EditorPath = Resolve-MetaEditorPath -Candidates @(
   "C:\Program Files\MetaTrader 4\metaeditor.exe",
@@ -315,7 +343,10 @@ $provenanceLines = @(
 [System.IO.File]::WriteAllLines($provenancePath, $provenanceLines, [System.Text.UTF8Encoding]::new($false))
 
 $releaseNotesPath = Join-Path $distDirectory "release-notes.md"
-$recentChanges = git log --oneline -n 15
+$recentChanges = Invoke-CheckedNativeOutput `
+  -Command "git" `
+  -Arguments @("log", "--oneline", "-n", "15") `
+  -FailureMessage "Unable to read release changelog history."
 $releaseNotesLines = @(
   "## Finatic MT Connector $releaseTag"
   ""
