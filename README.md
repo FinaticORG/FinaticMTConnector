@@ -16,7 +16,7 @@ Integrators run the **compiled EA** on their own terminal. Finatic operates inge
 
 ## Who should use what
 
-- **Customers** — Download `.ex4` / `.ex5` from [Releases](https://github.com/FinaticORG/FinaticMTConnector/releases), verify `checksums.sha256`, configure inputs from Finatic Connect. See Finatic Docs (MetaTrader) for WebRequest allowlisting and MT4 port 80 notes.
+- **Customers** — Download `.ex4` / `.ex5` from [Releases](https://github.com/FinaticORG/FinaticMTConnector/releases), verify `checksums.sha256`, configure inputs from Finatic Connect, and use only source files from the same release. See Finatic Docs (MetaTrader) for WebRequest allowlisting and MT4 port 80 notes.
 - **Finatic engineers** — Change protocol or EA source here; run CI; publish via the EA build workflow or local Windows release scripts.
 - **Auditors / partners** — Read source and docs; report security issues via [SECURITY.md](SECURITY.md).
 
@@ -43,21 +43,26 @@ uv run poe ci-fast
 
 ## EA releases (Finatic-built binaries only)
 
-Published artifacts are produced on Finatic-controlled build paths (GitHub Actions on a Windows runner, or the local release script). Customers should **not** treat random `.ex4` / `.ex5` builds as supported unless they match a tagged release and checksum file.
+Published artifacts are produced once from an immutable reviewed tag on a Finatic-controlled build path (GitHub Actions on a Windows runner, or the local release script). Each release contains matching `.mq4`, `.mq5`, `.ex4`, and `.ex5` files, build logs, non-secret provenance, and a checksum manifest. The Actions path creates a draft release; publish that same draft only after dual-platform signed staging acceptance. Customers should **not** treat committed binaries, compile-validation outputs, or arbitrary `.ex4` / `.ex5` builds as supported release artifacts.
+
+For `v1.0.1`, replace both the EA executable and source from the release. Verify every file with `sha256sum -c checksums.sha256`, then add the exact ingest **scheme and host** shown by Finatic Connect to **Tools → Options → Expert Advisors → Allow WebRequest for listed URL** before attaching the EA. Keep the prior immutable release available for rollback; do not disable signature enforcement to recover an installation.
 
 **Local Windows release** (Finatic maintainers):
 
 ```powershell
+git checkout v1.0.1
 uv run poe release-local
 ```
 
-Publish after review:
+Publish the exact artifacts produced by that tag after validation:
 
 ```powershell
 uv run poe release-local-publish
 ```
 
-Requires MetaEditor for MT4 and MT5, plus `gh auth login` when publishing. Non-default MetaEditor paths are supported via `scripts/release/local_release.ps1` parameters (documented in that script).
+The script refuses a dirty worktree or a checkout whose `v<pyproject version>` tag does not resolve to `HEAD`. It requires MetaEditor for MT4 and MT5, plus `gh auth login` when publishing. Non-default MetaEditor paths are supported via `scripts/release/local_release.ps1` parameters (documented in that script).
+
+Run the [dual-platform release checklist](docs/runbooks/real-terminal-release-e2e.md) before treating a published release as accepted by staging.
 
 ## Related Finatic repositories
 
