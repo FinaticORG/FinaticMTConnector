@@ -4,7 +4,7 @@ on:
   workflow_dispatch:
     inputs:
       release_tag:
-        description: "Release tag to build (for example: v0.1.2)"
+        description: "Reviewed immutable tag to build (for example: v1.0.1)"
         required: true
         type: string
 
@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   build-and-release:
-    name: Compile EAs and publish release assets
+    name: Compile EAs and create draft release
     runs-on: [self-hosted, windows, mt-builder]
     timeout-minutes: 45
     env:
@@ -33,14 +33,63 @@ jobs:
       - name: Resolve release tag
         id: release-tag
         shell: bash
+        env:
+          RELEASE_TAG_INPUT: ${{ github.event.inputs.release_tag }}
         run: |
-          release_tag="${{ github.event.inputs.release_tag }}"
+          release_tag="$RELEASE_TAG_INPUT"
           if [[ -z "$release_tag" ]]; then
             echo "Unable to resolve release tag."
             exit 1
           fi
+          if [[ ! "$release_tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "Release tag must be v<major>.<minor>.<patch>."
+            exit 1
+          fi
           echo "release_tag=$release_tag" >> "$GITHUB_OUTPUT"
-          git checkout "$release_tag"
+          git checkout --detach "$release_tag"
+          test "$(git rev-parse "$release_tag^{commit}")" = "$(git rev-parse HEAD)"
+
+      - name: Validate tag and source versions
+        shell: pwsh
+        run: |
+          $tagVersion = "${{ steps.release-tag.outputs.release_tag }}".TrimStart("v")
+          $pyprojectMatch = Select-String -Path "pyproject.toml" -Pattern '^version = "([0-9]+\.[0-9]+\.[0-9]+)"$' | Select-Object -First 1
+          if (-not $pyprojectMatch) {
+            throw "Unable to resolve pyproject version."
+          }
+          $projectVersion = $pyprojectMatch.Matches[0].Groups[1].Value
+          if ($projectVersion -ne $tagVersion) {
+            throw "Tag $tagVersion does not match pyproject version $projectVersion."
+          }
+
+          $versionParts = $projectVersion.Split(".")
+          $propertyVersion = "$($versionParts[0]).$($versionParts[1])$($versionParts[2])"
+          $sources = @(
+            @{ Platform = "MT4"; Path = $env:MT4_SOURCE_PATH },
+            @{ Platform = "MT5"; Path = $env:MT5_SOURCE_PATH }
+          )
+          foreach ($source in $sources) {
+            $sourceText = Get-Content $source.Path -Raw
+            if ($sourceText -notmatch [regex]::Escape("#property version   `"$propertyVersion`"")) {
+              throw "$($source.Platform) #property version does not match $projectVersion."
+            }
+            $displayMarker = "$($source.Platform) Connector v$projectVersion"
+            if (($sourceText.Split($displayMarker).Count - 1) -lt 2) {
+              throw "$($source.Platform) description/startup version does not match $projectVersion."
+            }
+          }
+
+      - name: Refuse an existing immutable release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_REPOSITORY: ${{ github.repository }}
+          RELEASE_TAG: ${{ steps.release-tag.outputs.release_tag }}
+        run: |
+          . "$env:GITHUB_WORKSPACE\scripts\release\native_command_guards.ps1"
+          Assert-GitHubReleaseAbsent `
+            -Repository $env:RELEASE_REPOSITORY `
+            -ReleaseTag $env:RELEASE_TAG
 
       - name: Discover MetaEditor executables
         id: discover-metaeditors
@@ -76,6 +125,10 @@ jobs:
 
           $mt4SourcePath = "$env:GITHUB_WORKSPACE\$env:MT4_SOURCE_PATH"
           $mt4BuildLogPath = "$env:RUNNER_TEMP\mt4-build.log"
+          $mt4CompiledPath = [System.IO.Path]::ChangeExtension($mt4SourcePath, ".ex4")
+          Remove-Item -LiteralPath $mt4CompiledPath -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $mt4BuildLogPath -Force -ErrorAction SilentlyContinue
+          $compileStartedAtUtc = [datetime]::UtcNow
 
           & "${{ steps.discover-metaeditors.outputs.mt4_metaeditor_path }}" /compile:"$mt4SourcePath" /log:"$mt4BuildLogPath"
           $metaEditorExitCode = $LASTEXITCODE
@@ -86,12 +139,18 @@ jobs:
             throw "MT4 compilation command failed. Exit code: $metaEditorExitCode"
           }
 
-          $mt4CompiledPath = [System.IO.Path]::ChangeExtension($mt4SourcePath, ".ex4")
           if (-not (Test-Path $mt4CompiledPath)) {
             if (Test-Path $mt4BuildLogPath) {
               Get-Content $mt4BuildLogPath
             }
             throw "MT4 compilation did not produce FinaticMT4ConnectorEA.ex4."
+          }
+          if ((Get-Item $mt4CompiledPath).Length -le 0 -or (Get-Item $mt4CompiledPath).LastWriteTimeUtc -lt $compileStartedAtUtc) {
+            throw "MT4 compilation did not produce a fresh non-empty artifact."
+          }
+          if (-not (Test-Path $mt4BuildLogPath) -or (Get-Content $mt4BuildLogPath -Raw) -notmatch '(?i)0\s+error(?:s|\(s\))?,\s*0\s+warning(?:s|\(s\))?') {
+            if (Test-Path $mt4BuildLogPath) { Get-Content $mt4BuildLogPath }
+            throw "MT4 build log does not report 0 errors and 0 warnings."
           }
           Copy-Item $mt4CompiledPath "$distDirectory\FinaticMT4ConnectorEA.ex4" -Force
 
@@ -107,6 +166,10 @@ jobs:
 
           $mt5SourcePath = "$env:GITHUB_WORKSPACE\$env:MT5_SOURCE_PATH"
           $mt5BuildLogPath = "$env:RUNNER_TEMP\mt5-build.log"
+          $mt5CompiledPath = [System.IO.Path]::ChangeExtension($mt5SourcePath, ".ex5")
+          Remove-Item -LiteralPath $mt5CompiledPath -Force -ErrorAction SilentlyContinue
+          Remove-Item -LiteralPath $mt5BuildLogPath -Force -ErrorAction SilentlyContinue
+          $compileStartedAtUtc = [datetime]::UtcNow
 
           & "${{ steps.discover-metaeditors.outputs.mt5_metaeditor_path }}" /compile:"$mt5SourcePath" /log:"$mt5BuildLogPath"
           $metaEditorExitCode = $LASTEXITCODE
@@ -117,12 +180,18 @@ jobs:
             throw "MT5 compilation command failed. Exit code: $metaEditorExitCode"
           }
 
-          $mt5CompiledPath = [System.IO.Path]::ChangeExtension($mt5SourcePath, ".ex5")
           if (-not (Test-Path $mt5CompiledPath)) {
             if (Test-Path $mt5BuildLogPath) {
               Get-Content $mt5BuildLogPath
             }
             throw "MT5 compilation did not produce FinaticMT5ConnectorEA.ex5."
+          }
+          if ((Get-Item $mt5CompiledPath).Length -le 0 -or (Get-Item $mt5CompiledPath).LastWriteTimeUtc -lt $compileStartedAtUtc) {
+            throw "MT5 compilation did not produce a fresh non-empty artifact."
+          }
+          if (-not (Test-Path $mt5BuildLogPath) -or (Get-Content $mt5BuildLogPath -Raw) -notmatch '(?i)0\s+error(?:s|\(s\))?,\s*0\s+warning(?:s|\(s\))?') {
+            if (Test-Path $mt5BuildLogPath) { Get-Content $mt5BuildLogPath }
+            throw "MT5 build log does not report 0 errors and 0 warnings."
           }
           Copy-Item $mt5CompiledPath "$distDirectory\FinaticMT5ConnectorEA.ex5" -Force
 
@@ -130,23 +199,37 @@ jobs:
             Copy-Item $mt5BuildLogPath "$distDirectory\FinaticMT5ConnectorEA.build.log" -Force
           }
 
-      - name: Generate SHA-256 checksums
+      - name: Copy tagged source assets
         shell: pwsh
         run: |
           $distDirectory = "$env:GITHUB_WORKSPACE\$env:DIST_DIRECTORY"
-          $checksumOutputPath = "$distDirectory\checksums.sha256"
+          Copy-Item "$env:GITHUB_WORKSPACE\$env:MT4_SOURCE_PATH" "$distDirectory\FinaticMT4ConnectorEA.mq4" -Force
+          Copy-Item "$env:GITHUB_WORKSPACE\$env:MT5_SOURCE_PATH" "$distDirectory\FinaticMT5ConnectorEA.mq5" -Force
 
-          $checksumLines = @("FinaticMT4ConnectorEA.ex4", "FinaticMT5ConnectorEA.ex5") | ForEach-Object {
-            $publishedPath = Join-Path $distDirectory $_
-            if (-not (Test-Path $publishedPath)) {
-              throw "Missing release artifact for checksum generation: $_"
-            }
-            $fileHash = Get-FileHash $publishedPath -Algorithm SHA256
-            "$($fileHash.Hash.ToLower())  $_"
-          }
+      - name: Record non-secret build provenance
+        shell: pwsh
+        run: |
+          $distDirectory = "$env:GITHUB_WORKSPACE\$env:DIST_DIRECTORY"
+          $mt4EditorPath = "${{ steps.discover-metaeditors.outputs.mt4_metaeditor_path }}"
+          $mt5EditorPath = "${{ steps.discover-metaeditors.outputs.mt5_metaeditor_path }}"
+          $lines = @(
+            "release_tag=${{ steps.release-tag.outputs.release_tag }}"
+            "commit_sha=$(git rev-parse HEAD)"
+            "build_time_utc=$([datetime]::UtcNow.ToString('o'))"
+            "runner_os=$env:RUNNER_OS"
+            "runner_arch=$env:RUNNER_ARCH"
+            "mt4_compiler_path=$mt4EditorPath"
+            "mt4_compiler_version=$((Get-Item $mt4EditorPath).VersionInfo.FileVersion)"
+            "mt5_compiler_path=$mt5EditorPath"
+            "mt5_compiler_version=$((Get-Item $mt5EditorPath).VersionInfo.FileVersion)"
+            "mt4_source_sha256=$((Get-FileHash "$distDirectory\FinaticMT4ConnectorEA.mq4" -Algorithm SHA256).Hash.ToLower())"
+            "mt5_source_sha256=$((Get-FileHash "$distDirectory\FinaticMT5ConnectorEA.mq5" -Algorithm SHA256).Hash.ToLower())"
+            "mt4_binary_sha256=$((Get-FileHash "$distDirectory\FinaticMT4ConnectorEA.ex4" -Algorithm SHA256).Hash.ToLower())"
+            "mt5_binary_sha256=$((Get-FileHash "$distDirectory\FinaticMT5ConnectorEA.ex5" -Algorithm SHA256).Hash.ToLower())"
+          )
           [System.IO.File]::WriteAllLines(
-            $checksumOutputPath,
-            $checksumLines,
+            "$distDirectory\build-provenance.txt",
+            $lines,
             [System.Text.UTF8Encoding]::new($false)
           )
 
@@ -162,6 +245,11 @@ jobs:
           ### Included artifacts
           - FinaticMT4ConnectorEA.ex4
           - FinaticMT5ConnectorEA.ex5
+          - FinaticMT4ConnectorEA.mq4
+          - FinaticMT5ConnectorEA.mq5
+          - FinaticMT4ConnectorEA.build.log
+          - FinaticMT5ConnectorEA.build.log
+          - build-provenance.txt
           - checksums.sha256
 
           ### Verification
@@ -171,9 +259,41 @@ jobs:
           sha256sum -c checksums.sha256
           ```
 
+          ### Migration from v0.1.4
+          Replace both the executable and source with this release, verify checksums, and allowlist the exact Finatic Connect ingest scheme and host. Keep v0.1.4 available for rollback. Do not disable signature enforcement.
+
           ### Recent changes
           $changelogItems
           "@ | Out-File -FilePath $releaseNotesPath -Encoding utf8
+
+      - name: Generate SHA-256 checksums
+        shell: pwsh
+        run: |
+          $distDirectory = "$env:GITHUB_WORKSPACE\$env:DIST_DIRECTORY"
+          $checksumOutputPath = "$distDirectory\checksums.sha256"
+          $assetNames = @(
+            "FinaticMT4ConnectorEA.ex4",
+            "FinaticMT5ConnectorEA.ex5",
+            "FinaticMT4ConnectorEA.mq4",
+            "FinaticMT5ConnectorEA.mq5",
+            "FinaticMT4ConnectorEA.build.log",
+            "FinaticMT5ConnectorEA.build.log",
+            "build-provenance.txt",
+            "release-notes.md"
+          )
+          $checksumLines = $assetNames | ForEach-Object {
+            $publishedPath = Join-Path $distDirectory $_
+            if (-not (Test-Path $publishedPath)) {
+              throw "Missing release artifact for checksum generation: $_"
+            }
+            $fileHash = Get-FileHash $publishedPath -Algorithm SHA256
+            "$($fileHash.Hash.ToLower())  $_"
+          }
+          [System.IO.File]::WriteAllLines(
+            $checksumOutputPath,
+            $checksumLines,
+            [System.Text.UTF8Encoding]::new($false)
+          )
 
       - name: Upload build artifacts
         uses: actions/upload-artifact@v7
@@ -181,16 +301,22 @@ jobs:
           name: finatic-ea-artifacts-${{ steps.release-tag.outputs.release_tag }}
           path: ${{ env.DIST_DIRECTORY }}
 
-      - name: Publish GitHub release
+      - name: Create immutable draft release
         if: steps.release-tag.outputs.release_tag != ''
         uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ steps.release-tag.outputs.release_tag }}
+          draft: true
+          overwrite_files: false
           generate_release_notes: true
           body_path: ${{ env.DIST_DIRECTORY }}/release-notes.md
           files: |
             ${{ env.DIST_DIRECTORY }}/FinaticMT4ConnectorEA.ex4
             ${{ env.DIST_DIRECTORY }}/FinaticMT5ConnectorEA.ex5
+            ${{ env.DIST_DIRECTORY }}/FinaticMT4ConnectorEA.mq4
+            ${{ env.DIST_DIRECTORY }}/FinaticMT5ConnectorEA.mq5
             ${{ env.DIST_DIRECTORY }}/checksums.sha256
             ${{ env.DIST_DIRECTORY }}/FinaticMT4ConnectorEA.build.log
             ${{ env.DIST_DIRECTORY }}/FinaticMT5ConnectorEA.build.log
+            ${{ env.DIST_DIRECTORY }}/build-provenance.txt
+            ${{ env.DIST_DIRECTORY }}/release-notes.md

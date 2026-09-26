@@ -13,6 +13,7 @@
 - [Signature failures](runbooks/signature-failures.md)
 - [Stale connector](runbooks/stale-connector.md)
 - [Dry observability audit](runbooks/dry-observability-audit.md)
+- [MT4 and MT5 signed release acceptance](runbooks/real-terminal-release-e2e.md)
 
 ## Compliance and releases
 

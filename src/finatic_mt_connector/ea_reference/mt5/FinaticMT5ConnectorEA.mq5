@@ -1,5 +1,5 @@
 #property version   "1.01"
-#property description "Finatic MT5 Connector v0.1.6 — place/modify/cancel trading, Mode A/C SL/TP, signed ingest."
+#property description "Finatic MT5 Connector v1.0.1 — place/modify/cancel trading, Mode A/C SL/TP, signed ingest."
 
 input string FinaticPlatform = "mt5";
 input string FinaticConnectorId = "";
@@ -38,7 +38,7 @@ int OnInit()
    if(FinaticSnapshotRequired)
       finaticPushSnapshot();
    EventSetTimer(FinaticHeartbeatSeconds);
-   Print("Finatic MT5 Connector v0.1.5: timer=", FinaticHeartbeatSeconds, "s base=", g_ingestBaseUrl, " signed=", FinaticSignEnvelopes);
+   Print("Finatic MT5 Connector v1.0.1: timer=", FinaticHeartbeatSeconds, "s base=", g_ingestBaseUrl, " signed=", FinaticSignEnvelopes);
    return(INIT_SUCCEEDED);
   }
 

@@ -1,6 +1,4 @@
 param(
-  [ValidateSet("patch", "minor", "major")]
-  [string]$Bump = "patch",
   [string]$MT4MetaEditorPath = "",
   [string]$MT5MetaEditorPath = "",
   [switch]$Publish
@@ -8,55 +6,123 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-function Get-NextVersion {
-  param([string]$BumpType)
+. (Join-Path $PSScriptRoot "native_command_guards.ps1")
 
-  $latestTag = git tag -l "v*" --sort=-v:refname | Select-Object -First 1
-  if (-not $latestTag) {
-    $latestTag = "v0.1.0"
-  }
+function Get-ProjectVersion {
+  param([string]$PyprojectPath)
 
-  $versionParts = $latestTag.TrimStart("v").Split(".")
-  $major = [int]$versionParts[0]
-  $minor = [int]$versionParts[1]
-  $patch = [int]$versionParts[2]
-
-  if ($BumpType -eq "major") {
-    return "$($major + 1).0.0"
+  $versionLine = Get-Content $PyprojectPath |
+    Where-Object { $_ -match '^version = "([0-9]+\.[0-9]+\.[0-9]+)"$' } |
+    Select-Object -First 1
+  if (-not $versionLine) {
+    throw "Unable to resolve the semantic version from pyproject.toml."
   }
-  if ($BumpType -eq "minor") {
-    return "$major.$($minor + 1).0"
-  }
-  return "$major.$minor.$($patch + 1)"
+  return [regex]::Match($versionLine, '"([0-9]+\.[0-9]+\.[0-9]+)"').Groups[1].Value
 }
 
-function Update-PyprojectVersion {
-  param([string]$VersionValue)
+function Assert-EaVersionMarkers {
+  param([string]$SourcePath, [string]$VersionValue, [string]$Platform)
 
-  $pyprojectPath = Join-Path $PSScriptRoot "..\..\pyproject.toml"
-  $pyprojectContent = Get-Content $pyprojectPath
-  $updatedContent = @()
-  $updated = $false
+  $sourceText = Get-Content $SourcePath -Raw
+  $versionParts = $VersionValue.Split('.')
+  $propertyVersion = "$($versionParts[0]).$($versionParts[1])$($versionParts[2])"
+  if ($sourceText -notmatch [regex]::Escape("#property version   `"$propertyVersion`"")) {
+    throw "$Platform #property version does not match $VersionValue."
+  }
+  $displayMarker = "$Platform Connector v$VersionValue"
+  if (($sourceText.Split($displayMarker).Count - 1) -lt 2) {
+    throw "$Platform description/startup version does not match $VersionValue."
+  }
+}
 
-  foreach ($line in $pyprojectContent) {
-    if (-not $updated -and $line -like 'version = "*"') {
-      $updatedContent += "version = `"$VersionValue`""
-      $updated = $true
-    } else {
-      $updatedContent += $line
+function Assert-MetaEditorCompileLog {
+  param([string]$LogPath, [string]$Platform)
+
+  if (-not (Test-Path $LogPath)) {
+    throw "$Platform compilation did not produce a build log."
+  }
+  $logText = Get-Content $LogPath -Raw
+  if ($logText -notmatch '(?i)0\s+error(?:s|\(s\))?,\s*0\s+warning(?:s|\(s\))?') {
+    Get-Content $LogPath
+    throw "$Platform compile log does not report 0 errors and 0 warnings."
+  }
+}
+
+function Assert-ReleaseBundle {
+  param([string]$DistDirectory, [string]$ReleaseTag, [string]$ReleaseCommit)
+
+  $assetNames = @(
+    "FinaticMT4ConnectorEA.ex4"
+    "FinaticMT5ConnectorEA.ex5"
+    "FinaticMT4ConnectorEA.mq4"
+    "FinaticMT5ConnectorEA.mq5"
+    "FinaticMT4ConnectorEA.build.log"
+    "FinaticMT5ConnectorEA.build.log"
+    "build-provenance.txt"
+    "release-notes.md"
+  )
+  $checksumPath = Join-Path $DistDirectory "checksums.sha256"
+  if (-not (Test-Path $checksumPath)) {
+    throw "Validated release bundle is missing checksums.sha256."
+  }
+
+  $expectedHashes = @{}
+  foreach ($checksumLine in Get-Content $checksumPath) {
+    if ($checksumLine -notmatch '^([0-9a-f]{64})  (.+)$') {
+      throw "Invalid checksum manifest line: $checksumLine"
+    }
+    $expectedHashes[$Matches[2]] = $Matches[1]
+  }
+  foreach ($assetName in $assetNames) {
+    $assetPath = Join-Path $DistDirectory $assetName
+    if (-not (Test-Path $assetPath) -or (Get-Item $assetPath).Length -le 0) {
+      throw "Validated release bundle is missing a non-empty $assetName."
+    }
+    $actualHash = (Get-FileHash $assetPath -Algorithm SHA256).Hash.ToLower()
+    if ($expectedHashes[$assetName] -ne $actualHash) {
+      throw "Checksum mismatch for validated release asset $assetName."
     }
   }
 
-  if (-not $updated) {
-    throw "Unable to update project version in pyproject.toml."
+  $provenanceText = Get-Content (Join-Path $DistDirectory "build-provenance.txt") -Raw
+  if ($provenanceText -notmatch "(?m)^release_tag=$([regex]::Escape($ReleaseTag))\r?$") {
+    throw "Release provenance tag does not match $ReleaseTag."
   }
+  if ($provenanceText -notmatch "(?m)^commit_sha=$([regex]::Escape($ReleaseCommit))\r?$") {
+    throw "Release provenance commit does not match $ReleaseCommit."
+  }
+}
 
-  $utf8WithoutBomEncoding = New-Object System.Text.UTF8Encoding($false)
-  [System.IO.File]::WriteAllText(
-    $pyprojectPath,
-    ($updatedContent -join "`n") + "`n",
-    $utf8WithoutBomEncoding
+function Publish-ReleaseBundle {
+  param([string]$DistDirectory, [string]$ReleaseTag)
+
+  Assert-GitHubReleaseAbsent `
+    -Repository "FinaticORG/FinaticMTConnector" `
+    -ReleaseTag $ReleaseTag
+  $releaseArguments = @(
+    "release"
+    "create"
+    $ReleaseTag
+    "$DistDirectory\FinaticMT4ConnectorEA.ex4"
+    "$DistDirectory\FinaticMT5ConnectorEA.ex5"
+    "$DistDirectory\FinaticMT4ConnectorEA.mq4"
+    "$DistDirectory\FinaticMT5ConnectorEA.mq5"
+    "$DistDirectory\FinaticMT4ConnectorEA.build.log"
+    "$DistDirectory\FinaticMT5ConnectorEA.build.log"
+    "$DistDirectory\build-provenance.txt"
+    "$DistDirectory\checksums.sha256"
+    "$DistDirectory\release-notes.md"
+    "--repo"
+    "FinaticORG/FinaticMTConnector"
+    "--title"
+    "Finatic MT Connector $ReleaseTag"
+    "--notes-file"
+    "$DistDirectory\release-notes.md"
   )
+  Invoke-CheckedNativeCommand `
+    -Command "gh" `
+    -Arguments $releaseArguments `
+    -FailureMessage "Unable to publish GitHub Release $ReleaseTag."
 }
 
 function Resolve-MetaEditorPath {
@@ -92,62 +158,21 @@ function Resolve-MetaEditorPath {
   throw "Unable to locate MetaEditor for $Label. Check local MT installation."
 }
 
-function Resolve-CompiledBinaryPath {
+function Assert-FreshCompiledBinary {
   param(
     [string]$ExpectedPath,
-    [string]$BinaryFilename,
-    [string]$PlatformFolderName,
+    [string]$Platform,
     [datetime]$CompileStartedAtUtc
   )
 
-  if (Test-Path $ExpectedPath) {
-    return $ExpectedPath
+  if (-not (Test-Path $ExpectedPath)) {
+    throw "$Platform compilation did not recreate its bound output: $ExpectedPath"
   }
 
-  $searchRoots = @(
-    (Split-Path -Parent $ExpectedPath),
-    "$env:APPDATA\MetaQuotes\Terminal",
-    "$env:LOCALAPPDATA\MetaQuotes\Terminal",
-    "C:\Program Files\MetaTrader 4",
-    "C:\Program Files (x86)\MetaTrader 4",
-    "C:\Program Files\MetaTrader 5",
-    "C:\Program Files (x86)\MetaTrader 5"
-  ) | Where-Object { $_ -and (Test-Path $_) } | Select-Object -Unique
-
-  $candidateFiles = @()
-  foreach ($searchRoot in $searchRoots) {
-    $candidateFiles += Get-ChildItem -Path $searchRoot -Recurse -Filter $BinaryFilename -ErrorAction SilentlyContinue
+  $compiledFile = Get-Item $ExpectedPath
+  if ($compiledFile.Length -le 0 -or $compiledFile.LastWriteTimeUtc -lt $CompileStartedAtUtc) {
+    throw "$Platform compilation did not produce a fresh non-empty bound output: $ExpectedPath"
   }
-
-  $freshCandidateFiles = $candidateFiles | Where-Object {
-    $_.LastWriteTimeUtc -ge $CompileStartedAtUtc.AddMinutes(-1)
-  }
-
-  if ($freshCandidateFiles) {
-    $preferredFreshFile = $freshCandidateFiles |
-      Where-Object { $_.FullName -match "$PlatformFolderName\\Experts" } |
-      Sort-Object LastWriteTimeUtc -Descending |
-      Select-Object -First 1
-    if ($preferredFreshFile) {
-      return $preferredFreshFile.FullName
-    }
-    return ($freshCandidateFiles | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).FullName
-  }
-
-  if (-not $candidateFiles) {
-    throw "Expected binary missing: $ExpectedPath and no fallback match for $BinaryFilename"
-  }
-
-  $preferredFile = $candidateFiles |
-    Where-Object { $_.FullName -match "$PlatformFolderName\\Experts" } |
-    Sort-Object LastWriteTimeUtc -Descending |
-    Select-Object -First 1
-
-  if ($preferredFile) {
-    return $preferredFile.FullName
-  }
-
-  return ($candidateFiles | Sort-Object LastWriteTimeUtc -Descending | Select-Object -First 1).FullName
 }
 
 function Get-TerminalRootFromMetaEditor {
@@ -189,14 +214,45 @@ function Resolve-ExpertsDirectoryPath {
 $repoRoot = Resolve-Path (Join-Path $PSScriptRoot "..\..")
 Set-Location $repoRoot
 
-$nextVersion = Get-NextVersion -BumpType $Bump
-$releaseTag = "v$nextVersion"
+$workingTreeChanges = Invoke-CheckedNativeOutput `
+  -Command "git" `
+  -Arguments @("status", "--porcelain") `
+  -FailureMessage "Unable to inspect the release worktree."
+if ($workingTreeChanges) {
+  throw "Release builds require a clean immutable-tag worktree."
+}
+
+$projectVersion = Get-ProjectVersion -PyprojectPath (Join-Path $repoRoot "pyproject.toml")
+$releaseTag = "v$projectVersion"
+$releaseCommit = Invoke-CheckedNativeOutput `
+  -Command "git" `
+  -Arguments @("rev-parse", "HEAD") `
+  -FailureMessage "Unable to resolve the release commit."
+try {
+  $tagCommit = Invoke-CheckedNativeOutput `
+    -Command "git" `
+    -Arguments @("rev-parse", "$releaseTag^{commit}") `
+    -FailureMessage "Unable to resolve release tag $releaseTag."
+} catch {
+  throw "Release tag $releaseTag must exist and resolve to HEAD ($releaseCommit). $($_.Exception.Message)"
+}
+if ($tagCommit -ne $releaseCommit) {
+  throw "Release tag $releaseTag must exist and resolve to HEAD ($releaseCommit)."
+}
 $distDirectory = Join-Path $repoRoot "dist\ea"
 
-Write-Host "Preparing release $releaseTag"
-uv run poe ci-fast
+if ($Publish) {
+  Assert-ReleaseBundle -DistDirectory $distDirectory -ReleaseTag $releaseTag -ReleaseCommit $releaseCommit
+  Publish-ReleaseBundle -DistDirectory $distDirectory -ReleaseTag $releaseTag
+  Write-Host "Validated release bundle published: $releaseTag"
+  return
+}
 
-Update-PyprojectVersion -VersionValue $nextVersion
+Write-Host "Building immutable release $releaseTag at $releaseCommit"
+Invoke-CheckedNativeCommand `
+  -Command "uv" `
+  -Arguments @("run", "poe", "ci-fast") `
+  -FailureMessage "Repository CI validation failed; release compilation is blocked."
 
 $mt4EditorPath = Resolve-MetaEditorPath -Candidates @(
   "C:\Program Files\MetaTrader 4\metaeditor.exe",
@@ -212,6 +268,8 @@ New-Item -ItemType Directory -Path $distDirectory -Force | Out-Null
 
 $mt4SourcePath = Join-Path $repoRoot "src\finatic_mt_connector\ea_reference\mt4\FinaticMT4ConnectorEA.mq4"
 $mt5SourcePath = Join-Path $repoRoot "src\finatic_mt_connector\ea_reference\mt5\FinaticMT5ConnectorEA.mq5"
+Assert-EaVersionMarkers -SourcePath $mt4SourcePath -VersionValue $projectVersion -Platform "MT4"
+Assert-EaVersionMarkers -SourcePath $mt5SourcePath -VersionValue $projectVersion -Platform "MT5"
 $mt4BuildLogPath = Join-Path $env:TEMP "mt4-build.log"
 $mt5BuildLogPath = Join-Path $env:TEMP "mt5-build.log"
 
@@ -223,69 +281,83 @@ $mt5ExpertsPath = Resolve-ExpertsDirectoryPath -PlatformFolderName "MQL5" -Termi
 
 $mt4CompilePath = Join-Path $mt4ExpertsPath "FinaticMT4ConnectorEA.mq4"
 $mt5CompilePath = Join-Path $mt5ExpertsPath "FinaticMT5ConnectorEA.mq5"
+$mt4BinaryPath = [System.IO.Path]::ChangeExtension($mt4CompilePath, ".ex4")
+$mt5BinaryPath = [System.IO.Path]::ChangeExtension($mt5CompilePath, ".ex5")
 
 Copy-Item $mt4SourcePath $mt4CompilePath -Force
 Copy-Item $mt5SourcePath $mt5CompilePath -Force
 
+Remove-Item -LiteralPath $mt4BinaryPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $mt4BuildLogPath -Force -ErrorAction SilentlyContinue
 $mt4CompileStartedAtUtc = [datetime]::UtcNow
 & $mt4EditorPath /compile:"$mt4CompilePath" /log:"$mt4BuildLogPath"
 if ($LASTEXITCODE -ne 0) {
   if (Test-Path $mt4BuildLogPath) { Get-Content $mt4BuildLogPath }
   throw "MT4 compilation failed."
 }
+Assert-MetaEditorCompileLog -LogPath $mt4BuildLogPath -Platform "MT4"
+Assert-FreshCompiledBinary -ExpectedPath $mt4BinaryPath -Platform "MT4" -CompileStartedAtUtc $mt4CompileStartedAtUtc
 
+Remove-Item -LiteralPath $mt5BinaryPath -Force -ErrorAction SilentlyContinue
+Remove-Item -LiteralPath $mt5BuildLogPath -Force -ErrorAction SilentlyContinue
 $mt5CompileStartedAtUtc = [datetime]::UtcNow
 & $mt5EditorPath /compile:"$mt5CompilePath" /log:"$mt5BuildLogPath"
 if ($LASTEXITCODE -ne 0) {
   if (Test-Path $mt5BuildLogPath) { Get-Content $mt5BuildLogPath }
   throw "MT5 compilation failed."
 }
-
-$mt4BinaryPath = [System.IO.Path]::ChangeExtension($mt4CompilePath, ".ex4")
-$mt5BinaryPath = [System.IO.Path]::ChangeExtension($mt5CompilePath, ".ex5")
-try {
-  $mt4BinaryPath = Resolve-CompiledBinaryPath -ExpectedPath $mt4BinaryPath -BinaryFilename "FinaticMT4ConnectorEA.ex4" -PlatformFolderName "MQL4" -CompileStartedAtUtc $mt4CompileStartedAtUtc
-} catch {
-  if (Test-Path $mt4BuildLogPath) {
-    Write-Host "---- MT4 build log ----"
-    Get-Content $mt4BuildLogPath
-    Write-Host "-----------------------"
-  }
-  throw
-}
-try {
-  $mt5BinaryPath = Resolve-CompiledBinaryPath -ExpectedPath $mt5BinaryPath -BinaryFilename "FinaticMT5ConnectorEA.ex5" -PlatformFolderName "MQL5" -CompileStartedAtUtc $mt5CompileStartedAtUtc
-} catch {
-  if (Test-Path $mt5BuildLogPath) {
-    Write-Host "---- MT5 build log ----"
-    Get-Content $mt5BuildLogPath
-    Write-Host "-----------------------"
-  }
-  throw
-}
+Assert-MetaEditorCompileLog -LogPath $mt5BuildLogPath -Platform "MT5"
+Assert-FreshCompiledBinary -ExpectedPath $mt5BinaryPath -Platform "MT5" -CompileStartedAtUtc $mt5CompileStartedAtUtc
 
 Copy-Item $mt4BinaryPath (Join-Path $distDirectory "FinaticMT4ConnectorEA.ex4") -Force
 Copy-Item $mt5BinaryPath (Join-Path $distDirectory "FinaticMT5ConnectorEA.ex5") -Force
-if (Test-Path $mt4BuildLogPath) { Copy-Item $mt4BuildLogPath (Join-Path $distDirectory "FinaticMT4ConnectorEA.build.log") -Force }
-if (Test-Path $mt5BuildLogPath) { Copy-Item $mt5BuildLogPath (Join-Path $distDirectory "FinaticMT5ConnectorEA.build.log") -Force }
+Copy-Item $mt4SourcePath (Join-Path $distDirectory "FinaticMT4ConnectorEA.mq4") -Force
+Copy-Item $mt5SourcePath (Join-Path $distDirectory "FinaticMT5ConnectorEA.mq5") -Force
+Copy-Item $mt4BuildLogPath (Join-Path $distDirectory "FinaticMT4ConnectorEA.build.log") -Force
+Copy-Item $mt5BuildLogPath (Join-Path $distDirectory "FinaticMT5ConnectorEA.build.log") -Force
 
-# Only EA binaries belong in shipped checksums.sha256 (matches GitHub release assets; no orphaned .build.log lines).
-$checksumLines = @("FinaticMT4ConnectorEA.ex4", "FinaticMT5ConnectorEA.ex5") | ForEach-Object {
-  $publishedPath = Join-Path $distDirectory $_
-  $fileHash = Get-FileHash $publishedPath -Algorithm SHA256
-  "$($fileHash.Hash.ToLower())  $_"
+$publishedBinaries = @("FinaticMT4ConnectorEA.ex4", "FinaticMT5ConnectorEA.ex5")
+foreach ($binaryName in $publishedBinaries) {
+  $binaryPath = Join-Path $distDirectory $binaryName
+  if ((Get-Item $binaryPath).Length -le 0) {
+    throw "Release binary is empty: $binaryName"
+  }
 }
-$checksumPath = Join-Path $distDirectory "checksums.sha256"
-[System.IO.File]::WriteAllLines($checksumPath, $checksumLines, [System.Text.UTF8Encoding]::new($false))
+
+$mt4EditorVersion = (Get-Item $mt4EditorPath).VersionInfo.FileVersion
+$mt5EditorVersion = (Get-Item $mt5EditorPath).VersionInfo.FileVersion
+$provenancePath = Join-Path $distDirectory "build-provenance.txt"
+$provenanceLines = @(
+  "release_tag=$releaseTag"
+  "commit_sha=$releaseCommit"
+  "build_time_utc=$([datetime]::UtcNow.ToString('o'))"
+  "mt4_compiler_path=$mt4EditorPath"
+  "mt4_compiler_version=$mt4EditorVersion"
+  "mt5_compiler_path=$mt5EditorPath"
+  "mt5_compiler_version=$mt5EditorVersion"
+  "mt4_source_sha256=$((Get-FileHash $mt4SourcePath -Algorithm SHA256).Hash.ToLower())"
+  "mt5_source_sha256=$((Get-FileHash $mt5SourcePath -Algorithm SHA256).Hash.ToLower())"
+  "mt4_binary_sha256=$((Get-FileHash (Join-Path $distDirectory 'FinaticMT4ConnectorEA.ex4') -Algorithm SHA256).Hash.ToLower())"
+  "mt5_binary_sha256=$((Get-FileHash (Join-Path $distDirectory 'FinaticMT5ConnectorEA.ex5') -Algorithm SHA256).Hash.ToLower())"
+)
+[System.IO.File]::WriteAllLines($provenancePath, $provenanceLines, [System.Text.UTF8Encoding]::new($false))
 
 $releaseNotesPath = Join-Path $distDirectory "release-notes.md"
-$recentChanges = git log --oneline -n 15
+$recentChanges = Invoke-CheckedNativeOutput `
+  -Command "git" `
+  -Arguments @("log", "--oneline", "-n", "15") `
+  -FailureMessage "Unable to read release changelog history."
 $releaseNotesLines = @(
   "## Finatic MT Connector $releaseTag"
   ""
   "### Included artifacts"
   "- FinaticMT4ConnectorEA.ex4"
   "- FinaticMT5ConnectorEA.ex5"
+  "- FinaticMT4ConnectorEA.mq4"
+  "- FinaticMT5ConnectorEA.mq5"
+  "- FinaticMT4ConnectorEA.build.log"
+  "- FinaticMT5ConnectorEA.build.log"
+  "- build-provenance.txt"
   "- checksums.sha256"
   ""
   "### Verification"
@@ -293,31 +365,31 @@ $releaseNotesLines = @(
   'sha256sum -c checksums.sha256'
   '```'
   ""
+  "### Migration from v0.1.4"
+  "Replace both the executable and source with this release, verify checksums, and allowlist the exact Finatic Connect ingest scheme and host. Keep v0.1.4 available for rollback. Do not disable signature enforcement."
+  ""
   "### Recent changes"
   $recentChanges
 )
 [System.IO.File]::WriteAllLines($releaseNotesPath, $releaseNotesLines, [System.Text.UTF8Encoding]::new($false))
 
-git add pyproject.toml
-git commit -m "chore(release): $releaseTag [skip ci] [skip release]"
-git tag $releaseTag
-
-if ($Publish) {
-  git push origin develop
-  git push origin $releaseTag
-  gh release create $releaseTag `
-    "$distDirectory\FinaticMT4ConnectorEA.ex4" `
-    "$distDirectory\FinaticMT5ConnectorEA.ex5" `
-    "$distDirectory\checksums.sha256" `
-    "$distDirectory\release-notes.md" `
-    --repo FinaticORG/FinaticMTConnector `
-    --title "Finatic MT Connector $releaseTag" `
-    --notes-file "$distDirectory\release-notes.md"
-  Write-Host "Release published: $releaseTag"
-} else {
-  Write-Host "Local release prepared: $releaseTag"
-  Write-Host "Run these when ready:"
-  Write-Host "  git push origin develop"
-  Write-Host "  git push origin $releaseTag"
-  Write-Host "  gh release create $releaseTag dist/ea/FinaticMT4ConnectorEA.ex4 dist/ea/FinaticMT5ConnectorEA.ex5 dist/ea/checksums.sha256 dist/ea/release-notes.md --repo FinaticORG/FinaticMTConnector --title `"Finatic MT Connector $releaseTag`" --notes-file dist/ea/release-notes.md"
+$checksumAssetNames = @(
+  "FinaticMT4ConnectorEA.ex4"
+  "FinaticMT5ConnectorEA.ex5"
+  "FinaticMT4ConnectorEA.mq4"
+  "FinaticMT5ConnectorEA.mq5"
+  "FinaticMT4ConnectorEA.build.log"
+  "FinaticMT5ConnectorEA.build.log"
+  "build-provenance.txt"
+  "release-notes.md"
+)
+$checksumLines = $checksumAssetNames | ForEach-Object {
+  $publishedPath = Join-Path $distDirectory $_
+  $fileHash = Get-FileHash $publishedPath -Algorithm SHA256
+  "$($fileHash.Hash.ToLower())  $_"
 }
+$checksumPath = Join-Path $distDirectory "checksums.sha256"
+[System.IO.File]::WriteAllLines($checksumPath, $checksumLines, [System.Text.UTF8Encoding]::new($false))
+
+Write-Host "Local release artifacts prepared from immutable $releaseTag."
+Write-Host "After dual-platform staging acceptance, rerun with -Publish to publish this exact checksummed bundle without recompiling."

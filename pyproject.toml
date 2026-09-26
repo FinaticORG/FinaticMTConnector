@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "finatic-mt-connector"
-version = "1.0.0"
+version = "1.0.1"
 description = "Customer-hosted MT4/MT5 connector contracts and reference implementation."
 readme = "README.md"
 requires-python = ">=3.12,<3.14"
@@ -89,9 +89,9 @@ sequence = [
 ]
 
 [tool.poe.tasks.release-local]
-help = "Run local Windows binary release preparation (no push)"
-cmd = "powershell -ExecutionPolicy Bypass -File scripts/release/local_release.ps1 -Bump patch"
+help = "Build the checked-out immutable release tag on Windows (no publish)"
+cmd = "powershell -ExecutionPolicy Bypass -File scripts/release/local_release.ps1"
 
 [tool.poe.tasks.release-local-publish]
-help = "Run local Windows binary release preparation and publish"
-cmd = "powershell -ExecutionPolicy Bypass -File scripts/release/local_release.ps1 -Bump patch -Publish"
+help = "Publish the existing validated bundle without recompiling"
+cmd = "powershell -ExecutionPolicy Bypass -File scripts/release/local_release.ps1 -Publish"

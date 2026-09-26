@@ -1,4 +1,8 @@
-# Real MT5 terminal end-to-end (Phase 1 checklist)
+# Real MT5 terminal end-to-end (legacy checklist)
+
+For release acceptance, use the current [MT4 and MT5 signed release
+checklist](real-terminal-release-e2e.md). This page remains as historical MT5
+setup context only.
 
 Use this when validating `p1-e2e-real-terminal` with hardware you control. Record pass/fail and notes in your release ticket.
 
