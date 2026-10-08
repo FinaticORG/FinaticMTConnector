@@ -3,6 +3,8 @@
 ## Required
 
 - Build and sign envelopes.
+- Include the immutable semantic release marker as `connector_version` inside
+  every canonical signed ingress body.
 - Send heartbeat, snapshot, events, and replay-request payloads.
 - Execute command envelopes and emit command-result payloads.
 - Persist the connector-scoped next sequence in terminal global state.
@@ -17,6 +19,7 @@
 - No normalization decisions.
 - No dedupe decisions.
 - No business logic or policy interpretation.
+- No use of `connector_version` as authorization, identity, or policy input.
 - No secret logging.
 - No unbounded retry or relaxation of signature, timestamp, replay, or
   rate-limit enforcement.
@@ -29,5 +32,9 @@ Keep the EA thin and deterministic. Finatic server-side components own semantics
 
 - MT4 and MT5 source and executable assets must come from the same immutable reviewed tag.
 - The package version, EA description, startup log version, source assets, checksums, and provenance record must agree.
+- The signed `connector_version` must match those release markers. It is
+  authenticated provenance for diagnostics, not proof that a connector is
+  authorized or current; servers remain compatible with legacy envelopes that
+  omit it.
 - A release candidate is not supported until both compiled EAs pass the controlled signed-ingress staging checklist.
 - Never weaken signing or log connector credentials to diagnose a release.
