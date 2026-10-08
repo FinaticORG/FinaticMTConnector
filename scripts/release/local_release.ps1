@@ -33,6 +33,10 @@ function Assert-EaVersionMarkers {
   if (($sourceText.Split($displayMarker).Count - 1) -lt 2) {
     throw "$Platform description/startup version does not match $VersionValue."
   }
+  $signedBodyMarker = "#define FINATIC_CONNECTOR_VERSION `"$VersionValue`""
+  if (($sourceText.Split($signedBodyMarker).Count - 1) -ne 1) {
+    throw "$Platform signed connector version does not match $VersionValue."
+  }
 }
 
 function Assert-MetaEditorCompileLog {
@@ -270,6 +274,12 @@ $mt4SourcePath = Join-Path $repoRoot "src\finatic_mt_connector\ea_reference\mt4\
 $mt5SourcePath = Join-Path $repoRoot "src\finatic_mt_connector\ea_reference\mt5\FinaticMT5ConnectorEA.mq5"
 Assert-EaVersionMarkers -SourcePath $mt4SourcePath -VersionValue $projectVersion -Platform "MT4"
 Assert-EaVersionMarkers -SourcePath $mt5SourcePath -VersionValue $projectVersion -Platform "MT5"
+$pythonReferencePath = Join-Path $repoRoot "src\finatic_mt_connector\ea_reference\reference_connector_base.py"
+$pythonReferenceText = Get-Content $pythonReferencePath -Raw
+$pythonVersionMarker = "CONNECTOR_VERSION = `"$projectVersion`""
+if (($pythonReferenceText.Split($pythonVersionMarker).Count - 1) -ne 1) {
+  throw "Python reference connector version does not match $projectVersion."
+}
 $mt4BuildLogPath = Join-Path $env:TEMP "mt4-build.log"
 $mt5BuildLogPath = Join-Path $env:TEMP "mt5-build.log"
 

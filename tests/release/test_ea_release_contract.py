@@ -18,6 +18,9 @@ MT4_SOURCE = REPO_ROOT / (
 MT5_SOURCE = REPO_ROOT / (
     "src/finatic_mt_connector/ea_reference/mt5/FinaticMT5ConnectorEA.mq5"
 )
+PYTHON_REFERENCE = REPO_ROOT / (
+    "src/finatic_mt_connector/ea_reference/reference_connector_base.py"
+)
 CUSTOMER_ASSETS = {
     "FinaticMT4ConnectorEA.ex4",
     "FinaticMT5ConnectorEA.ex5",
@@ -47,11 +50,38 @@ def _property_version(version: str) -> str:
 def test_ea_version_markers_match_package_version() -> None:
     version = _project_version()
     property_marker = f'#property version   "{_property_version(version)}"'
+    signed_body_marker = f'#define FINATIC_CONNECTOR_VERSION "{version}"'
 
     for platform, source_path in (("MT4", MT4_SOURCE), ("MT5", MT5_SOURCE)):
         source = source_path.read_text(encoding="utf-8")
         assert property_marker in source
+        assert source.count(signed_body_marker) == 1
         assert source.count(f"{platform} Connector v{version}") >= 2
+
+    python_source = PYTHON_REFERENCE.read_text(encoding="utf-8")
+    assert python_source.count(f'CONNECTOR_VERSION = "{version}"') == 1
+
+
+def test_ea_signed_body_uses_python_canonical_key_order() -> None:
+    expected_keys = (
+        "connector_version",
+        "payload",
+        "platform",
+        "secret_version",
+        "sequence",
+    )
+
+    for source_path in (MT4_SOURCE, MT5_SOURCE):
+        source = source_path.read_text(encoding="utf-8")
+        function_start = source.index("string finaticBuildCanonicalPayloadJson")
+        function_end = source.index(
+            "string finaticHmacSha256Hex", function_start
+        )
+        body_builder = source[function_start:function_end]
+        key_positions = [
+            body_builder.index(f'\\"{key}\\"') for key in expected_keys
+        ]
+        assert key_positions == sorted(key_positions)
 
 
 def test_both_eas_default_to_the_shared_signed_transport() -> None:

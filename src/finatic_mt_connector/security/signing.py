@@ -73,6 +73,7 @@ def build_signing_headers(
 
 def extract_signable_body_dictionary(
     *,
+    connector_version: str,
     sequence: int,
     secret_version: int,
     platform: str,
@@ -80,6 +81,7 @@ def extract_signable_body_dictionary(
 ) -> dict[str, Any]:
     """Canonical JSON-compatible dict for EA + Python signing parity."""
     return {
+        "connector_version": connector_version,
         "payload": payload,
         "platform": platform,
         "secret_version": secret_version,
