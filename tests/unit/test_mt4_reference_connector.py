@@ -12,6 +12,7 @@ from finatic_mt_connector.ea_reference.mt4 import (
     MT4ReferenceConnector,
 )
 from finatic_mt_connector.ea_reference.reference_connector_base import (
+    CONNECTOR_VERSION,
     MAX_PERSISTED_SEQUENCE,
     MAX_RECOVERABLE_SEQUENCE,
     BaseReferenceConnector,
@@ -91,6 +92,7 @@ def test_push_minimal_signed_snapshot_sends_hmac_headers() -> None:
     assert signature_header
     signable_body = json.loads(posted_request.data.decode("utf-8"))
     assert signable_body["platform"] == "mt4"
+    assert signable_body["connector_version"] == CONNECTOR_VERSION
     assert len(signable_body["payload"]["accounts"]) == 2
     assert verify_payload_signature(
         secret_value=connector.connector_configuration.connector_secret,
@@ -147,6 +149,8 @@ def test_sequence_409_retries_once_and_restores_persisted_next_sequence(
     retry_body = json.loads(mock_urlopen.call_args_list[1].args[0].data)
     assert first_body["sequence"] == 0
     assert retry_body["sequence"] == 7
+    assert first_body["connector_version"] == CONNECTOR_VERSION
+    assert retry_body["connector_version"] == CONNECTOR_VERSION
     retry_signature = (
         mock_urlopen.call_args_list[1].args[0].get_header("X-finatic-signature")
     )
