@@ -21,3 +21,12 @@ terminal global variables, JSON/string helpers, `WebRequest`, and cryptographic
 functions already present in the EA sources. No additional third-party
 component or license is introduced. The fail-closed direct-member parser and
 sequence-ceiling guards are implemented in those native helpers as well.
+
+## Signed release provenance
+
+The `connector_version` ingress field is a constant release marker serialized
+inside the existing canonical JSON body and protected by the existing HMAC.
+It uses only native MQL string handling and Python standard-library code. This
+change adds no component, package, network service, bundled source, or license
+obligation. The marker is diagnostic provenance only and contains no secret or
+customer identifier.
