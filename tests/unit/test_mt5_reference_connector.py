@@ -11,6 +11,9 @@ from finatic_mt_connector.ea_reference.mt5 import (
     MT5ConnectorConfiguration,
     MT5ReferenceConnector,
 )
+from finatic_mt_connector.ea_reference.reference_connector_base import (
+    CONNECTOR_VERSION,
+)
 
 
 def _build_connector() -> MT5ReferenceConnector:
@@ -146,6 +149,7 @@ def test_push_minimal_signed_snapshot_sends_hmac_headers() -> None:
     import json
 
     signable_body = json.loads(posted_body)
+    assert signable_body["connector_version"] == CONNECTOR_VERSION
     assert len(signable_body["payload"]["accounts"]) == 2
     assert verify_payload_signature(
         secret_value=connector.connector_configuration.connector_secret,
@@ -194,6 +198,8 @@ def test_repeated_sequence_409_is_bounded_to_one_retry(tmp_path: Path) -> None:
     retry_body = json.loads(mock_urlopen.call_args_list[1].args[0].data)
     assert first_body["sequence"] == 0
     assert retry_body["sequence"] == 12
+    assert first_body["connector_version"] == CONNECTOR_VERSION
+    assert retry_body["connector_version"] == CONNECTOR_VERSION
     assert connector._minimal_webhook_sequence == 12
     assert not connector_configuration.sequence_state_path.exists()
 

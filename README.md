@@ -14,6 +14,12 @@ Customer-hosted MetaTrader 4 and 5 connector — protocol contracts, signing rul
 
 Integrators run the **compiled EA** on their own terminal. Finatic operates ingest (`FinaticBackground`) and broker data projection (`FinaticCore`) in separate private repositories.
 
+Every current EA request includes its canonical semantic release version as
+`connector_version` inside the exact HMAC-signed JSON body. This marker is
+authenticated release provenance for observability; it is not an authorization
+input and it does not expose terminal, account, or secret data. Background
+continues to accept legacy connectors that omit the field.
+
 ## Who should use what
 
 - **Customers** — Download `.ex4` / `.ex5` from [Releases](https://github.com/FinaticORG/FinaticMTConnector/releases), verify `checksums.sha256`, configure inputs from Finatic Connect, and use only source files from the same release. See Finatic Docs (MetaTrader) for WebRequest allowlisting and MT4 port 80 notes.

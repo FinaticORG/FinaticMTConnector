@@ -98,6 +98,28 @@ jobs:
                   f"Reviewed version {reviewed_version} does not match next tag {expected_version}; "
                   "align package and EA versions in a reviewed PR before tagging"
               )
+          signed_body_marker = (
+              f'#define FINATIC_CONNECTOR_VERSION "{reviewed_version}"'
+          )
+          for source_path in (
+              Path("src/finatic_mt_connector/ea_reference/mt4/FinaticMT4ConnectorEA.mq4"),
+              Path("src/finatic_mt_connector/ea_reference/mt5/FinaticMT5ConnectorEA.mq5"),
+          ):
+              source_text = source_path.read_text(encoding="utf-8")
+              if source_text.count(signed_body_marker) != 1:
+                  raise RuntimeError(
+                      f"{source_path} signed connector version does not match "
+                      f"reviewed version {reviewed_version}"
+                  )
+          python_reference = Path(
+              "src/finatic_mt_connector/ea_reference/reference_connector_base.py"
+          ).read_text(encoding="utf-8")
+          python_marker = f'CONNECTOR_VERSION = "{reviewed_version}"'
+          if python_reference.count(python_marker) != 1:
+              raise RuntimeError(
+                  "Python reference connector version does not match reviewed "
+                  f"version {reviewed_version}"
+              )
           PY
 
       - name: Configure git author

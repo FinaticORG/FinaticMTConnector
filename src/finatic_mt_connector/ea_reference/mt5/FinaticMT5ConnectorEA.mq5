@@ -1,5 +1,7 @@
-#property version   "1.01"
-#property description "Finatic MT5 Connector v1.0.1 — place/modify/cancel trading, Mode A/C SL/TP, signed ingest."
+#property version   "1.02"
+#property description "Finatic MT5 Connector v1.0.2 — place/modify/cancel trading, Mode A/C SL/TP, signed ingest."
+
+#define FINATIC_CONNECTOR_VERSION "1.0.2"
 
 input string FinaticPlatform = "mt5";
 input string FinaticConnectorId = "";
@@ -38,7 +40,7 @@ int OnInit()
    if(FinaticSnapshotRequired)
       finaticPushSnapshot();
    EventSetTimer(FinaticHeartbeatSeconds);
-   Print("Finatic MT5 Connector v1.0.1: timer=", FinaticHeartbeatSeconds, "s base=", g_ingestBaseUrl, " signed=", FinaticSignEnvelopes);
+   Print("Finatic MT5 Connector v1.0.2: timer=", FinaticHeartbeatSeconds, "s base=", g_ingestBaseUrl, " signed=", FinaticSignEnvelopes);
    return(INIT_SUCCEEDED);
   }
 
@@ -1304,7 +1306,8 @@ string finaticBuildCanonicalPayloadJson(long sequenceNumber, int secretVersion, 
   {
    // Canonical JSON: keys sorted alphabetically, no spaces.
    return(
-      "{\"payload\":" + innerPayloadJson +
+      "{\"connector_version\":\"" + FINATIC_CONNECTOR_VERSION +
+      "\",\"payload\":" + innerPayloadJson +
       ",\"platform\":\"" + platformValue +
       "\",\"secret_version\":" + IntegerToString(secretVersion) +
       ",\"sequence\":" + IntegerToString(sequenceNumber) + "}"

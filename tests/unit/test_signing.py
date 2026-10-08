@@ -52,14 +52,54 @@ def test_extract_signable_body_dictionary_matches_background_shape() -> None:
     )
 
     signable = extract_signable_body_dictionary(
+        connector_version="1.0.2",
         sequence=7,
         secret_version=2,
         platform="mt5",
         payload={"event_type": "heartbeat"},
     )
     assert signable == {
+        "connector_version": "1.0.2",
         "payload": {"event_type": "heartbeat"},
         "platform": "mt5",
         "secret_version": 2,
         "sequence": 7,
     }
+
+
+def test_connector_version_is_part_of_the_canonical_signed_bytes() -> None:
+    from finatic_mt_connector.security.signing import (
+        compute_canonical_body,
+        extract_signable_body_dictionary,
+    )
+
+    signable = extract_signable_body_dictionary(
+        connector_version="1.0.2",
+        sequence=7,
+        secret_version=2,
+        platform="mt5",
+        payload={"event_type": "heartbeat"},
+    )
+
+    assert compute_canonical_body(signable) == (
+        b'{"connector_version":"1.0.2","payload":{"event_type":"heartbeat"},'
+        b'"platform":"mt5","secret_version":2,"sequence":7}'
+    )
+
+
+def test_connector_version_tampering_invalidates_signature() -> None:
+    from finatic_mt_connector.security.signing import (
+        extract_signable_body_dictionary,
+    )
+
+    signable = extract_signable_body_dictionary(
+        connector_version="1.0.2",
+        sequence=7,
+        secret_version=2,
+        platform="mt5",
+        payload={"event_type": "heartbeat"},
+    )
+    signature = sign_payload("secret", signable)
+    tampered = {**signable, "connector_version": "1.0.3"}
+
+    assert not verify_payload_signature("secret", tampered, signature)

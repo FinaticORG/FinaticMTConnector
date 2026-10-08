@@ -1,9 +1,10 @@
 """Shared transport utilities for MT connector references.
 
 **Deployed Finatic Background** (`FinaticBackground` webhook router) accepts a
-minimal JSON body per route: ``sequence``, ``secret_version``, ``platform``,
-``payload`` — see ``MTIngressRequestBody`` in ``webhook_routes.py``. The MQL EA
-and :meth:`BaseReferenceConnector.push_minimal_heartbeat` use this shape.
+minimal JSON body per route: ``connector_version``, ``sequence``,
+``secret_version``, ``platform``, ``payload`` — see ``MTIngressRequestBody`` in
+``webhook_routes.py``. The MQL EA and
+:meth:`BaseReferenceConnector.push_minimal_heartbeat` use this shape.
 
 The signed-envelope helpers (:meth:`push_snapshot`, :meth:`push_events`,
 :meth:`push_heartbeat`) POST a richer schema plus ``X-Finatic-*`` headers. That
@@ -16,7 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any, NoReturn
@@ -31,6 +32,7 @@ from finatic_mt_connector.security.signing import (
 )
 
 logger = logging.getLogger(__name__)
+CONNECTOR_VERSION = "1.0.2"
 MAX_PERSISTED_SEQUENCE = (1 << 53) - 1
 MAX_RECOVERABLE_SEQUENCE = MAX_PERSISTED_SEQUENCE - 1
 SEQUENCE_ERROR_CODE = "MT_CONNECTOR_SEQUENCE_OUT_OF_ORDER"
@@ -69,6 +71,7 @@ class ReferenceConnectorConfiguration:
     connection_id: UUID
     connector_secret: str
     ingest_base_url: str
+    connector_version: str = field(default=CONNECTOR_VERSION, init=False)
     secret_version: int = 1
     signing_scheme_version: int = 1
     timestamp_skew_seconds: int = 300
@@ -177,6 +180,7 @@ class BaseReferenceConnector:
         )
         return {
             "schema_version": 1,
+            "connector_version": self.connector_configuration.connector_version,
             "platform": self.connector_configuration.platform,
             "connector_id": str(self.connector_configuration.connector_id),
             "connection_id": str(self.connector_configuration.connection_id),
@@ -232,6 +236,7 @@ class BaseReferenceConnector:
             self._minimal_webhook_sequence if sequence is None else sequence
         )
         return extract_signable_body_dictionary(
+            connector_version=connector_configuration.connector_version,
             sequence=sequence_index,
             secret_version=connector_configuration.secret_version,
             platform=connector_configuration.platform,
