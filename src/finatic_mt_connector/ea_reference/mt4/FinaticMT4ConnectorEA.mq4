@@ -1,5 +1,7 @@
-#property version   "1.01"
-#property description "Finatic MT4 Connector v1.0.1 — place/modify/cancel trading, Mode A/C SL/TP, signed ingest."
+#property version   "1.02"
+#property description "Finatic MT4 Connector v1.0.2 — place/modify/cancel trading, Mode A/C SL/TP, signed ingest."
+
+#define FINATIC_CONNECTOR_VERSION "1.0.2"
 
 input string FinaticPlatform = "mt4";
 input string FinaticConnectorId = "";
@@ -41,7 +43,7 @@ int OnInit()
       finaticPushSnapshot();
    EventSetTimer(FinaticHeartbeatSeconds);
    Print(
-      "Finatic MT4 Connector v1.0.1: timer=",
+      "Finatic MT4 Connector v1.0.2: timer=",
       FinaticHeartbeatSeconds,
       "s base=",
       g_ingestBaseUrl,
@@ -1183,9 +1185,10 @@ string finaticBuildCanonicalPayloadJson(
    string innerPayloadJson
 )
   {
-   // Must match Python json.dumps(..., sort_keys=True): payload, platform, secret_version, sequence.
+   // Must match Python json.dumps(..., sort_keys=True): connector_version, payload, platform, secret_version, sequence.
    return(
-      "{\"payload\":" + innerPayloadJson +
+      "{\"connector_version\":\"" + FINATIC_CONNECTOR_VERSION +
+      "\",\"payload\":" + innerPayloadJson +
       ",\"platform\":\"" + platformValue +
       "\",\"secret_version\":" + IntegerToString(secretVersion) +
       ",\"sequence\":" + IntegerToString(sequenceNumber) + "}"
