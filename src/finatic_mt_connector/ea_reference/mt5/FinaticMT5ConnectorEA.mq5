@@ -298,6 +298,7 @@ string finaticBuildTransactionEventJson(const MqlTradeTransaction& trans)
          "\",\"volume\":" + DoubleToString(trans.volume, 4) +
          ",\"price\":" + DoubleToString(trans.price, 5) +
          ",\"side\":\"" + finaticMt5OrderSide((long)trans.order_type) +
+         ",\"time\":\"" + TimeToString((datetime)trans.time, TIME_DATE|TIME_SECONDS) +
          ",\"login\":\"" + login + "\"}}"
       );
      }

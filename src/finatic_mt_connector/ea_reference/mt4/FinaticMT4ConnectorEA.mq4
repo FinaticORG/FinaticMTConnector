@@ -328,6 +328,7 @@ string finaticBuildTradeEventJson()
          "\",\"volume\":" + DoubleToString(OrderLots(), 4) +
          ",\"price\":" + DoubleToString(OrderOpenPrice(), 5) +
          ",\"side\":\"" + finaticMt4OrderSide(orderType) +
+         ",\"time\":\"" + TimeToString(OrderOpenTime(), TIME_DATE|TIME_SECONDS) +
          ",\"login\":\"" + login + "\"}}"
       );
      }
