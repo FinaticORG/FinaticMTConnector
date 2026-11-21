@@ -13,6 +13,16 @@
 - Parse recovery fields only as direct, correctly typed JSON members. Stop
   before sending when the persisted next sequence has reached its platform
   ceiling; never wrap or reuse the exhausted value.
+- Send live `order.fill` payloads with the broker-native `time` field. MT5
+  reads it from the broker deal history selected by the transaction deal
+  ticket (`DEAL_TIME` / `DEAL_TIME_MSC`); MT4 reads the broker order open
+  time (`OrderOpenTime()`).
+- Send no live fill when the broker execution time cannot be read, and record
+  an explicit diagnostic. The history-replay path recovers the missed fill
+  with its broker timestamp.
+- Treat a Background `MT_INGESTION_PERSIST_REJECTED` answer as a rejected
+  persistence attempt: correct the payload and retry. Never treat it as a
+  successful ingest.
 
 ## Forbidden
 
@@ -21,6 +31,10 @@
 - No business logic or policy interpretation.
 - No use of `connector_version` as authorization, identity, or policy input.
 - No secret logging.
+- No synthetic execution timestamp. No terminal, ingress, or wall-clock time
+  (`TimeCurrent()`, `TimeGMT()`, `TimeLocal()`) is ever sent as the fill
+  execution time.
+- No fill payload without broker execution evidence.
 - No unbounded retry or relaxation of signature, timestamp, replay, or
   rate-limit enforcement.
 

@@ -321,14 +321,25 @@ string finaticBuildTradeEventJson()
    if(finaticIsMarketPositionOrderType(orderType))
      {
       side = (orderType == OP_SELL) ? "sell" : "buy";
+      // The broker order open time is the execution evidence for this live
+      // market-position fill. No terminal or ingress wall-clock time is ever
+      // substituted; when the broker time is unavailable the fill is not
+      // sent and the history-replay path recovers the order instead.
+      datetime executionTime = OrderOpenTime();
+      if(executionTime <= 0)
+        {
+         Print("Finatic: broker order open time unavailable for order ", orderTicket,
+               "; live order.fill suppressed (history replay recovers the order).");
+         return("");
+        }
       return(
          "{\"event_type\":\"order.fill\",\"payload\":{\"deal_id\":\"" + IntegerToString(orderTicket) +
          "\",\"order_id\":\"" + IntegerToString(orderTicket) +
          "\",\"symbol\":\"" + symbol +
          "\",\"volume\":" + DoubleToString(OrderLots(), 4) +
          ",\"price\":" + DoubleToString(OrderOpenPrice(), 5) +
-         ",\"side\":\"" + finaticMt4OrderSide(orderType) +
-         ",\"time\":\"" + TimeToString(OrderOpenTime(), TIME_DATE|TIME_SECONDS) +
+         ",\"side\":\"" + finaticMt4OrderSide(orderType) + "\"" +
+         ",\"time\":\"" + TimeToString(executionTime, TIME_DATE|TIME_SECONDS) + "\"" +
          ",\"login\":\"" + login + "\"}}"
       );
      }
