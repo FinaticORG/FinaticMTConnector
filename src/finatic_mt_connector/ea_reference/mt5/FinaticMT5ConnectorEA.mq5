@@ -73,7 +73,10 @@ void OnTradeTransaction(const MqlTradeTransaction& trans, const MqlTradeRequest&
       trans.type != TRADE_TRANSACTION_ORDER_UPDATE && trans.type != TRADE_TRANSACTION_ORDER_DELETE)
      return;
 
-   string eventsJson = "[" + finaticBuildTransactionEventJson(trans) + "]";
+   string eventJson = finaticBuildTransactionEventJson(trans);
+   if(StringLen(eventJson) < 2)
+      return;
+   string eventsJson = "[" + eventJson + "]";
    string innerPayload = "{\"events\":" + eventsJson + "}";
    finaticPostMinimalRoute("events", innerPayload);
   }
@@ -285,11 +288,72 @@ void finaticPushSnapshot()
       finaticDrainPendingCommands(responseBody);
   }
 
+// Makes the broker deal history reachable for the transaction that is being
+// serialized. The window is selection only: the payload timestamp is always
+// read from the selected deal, never from this clock.
+bool finaticMt5SelectDealHistory()
+  {
+   datetime toTime = TimeCurrent() + 3600;
+   datetime fromTime = toTime - 172800;
+   if(!HistorySelect(fromTime, toTime))
+     {
+      Print("Finatic: broker history selection failed; live order.fill suppressed.");
+      return(false);
+     }
+   return(true);
+  }
+
+// Reads the broker execution time of a deal from the broker deal history.
+// MqlTradeTransaction carries no execution time member, so the only broker
+// evidence is the deal selected by its ticket: DEAL_TIME (seconds) and
+// DEAL_TIME_MSC (milliseconds). No terminal or ingress wall-clock time is
+// ever used as execution evidence; when the broker time cannot be read the
+// caller must not emit a fill payload.
+bool finaticMt5DealExecutionTime(const ulong dealTicket, datetime &executionTime)
+  {
+   executionTime = 0;
+   if(dealTicket == 0)
+     {
+      Print("Finatic: broker deal ticket missing; live order.fill suppressed.");
+      return(false);
+     }
+   if(!finaticMt5SelectDealHistory())
+      return(false);
+   if(!HistoryDealSelect(dealTicket))
+     {
+      Print("Finatic: broker deal ", (long)dealTicket,
+            " is not selectable from history; live order.fill suppressed.");
+      return(false);
+     }
+   long dealTimeSeconds = HistoryDealGetInteger(dealTicket, DEAL_TIME);
+   long dealTimeMillis = HistoryDealGetInteger(dealTicket, DEAL_TIME_MSC);
+   if(dealTimeSeconds <= 0 && dealTimeMillis <= 0)
+     {
+      Print("Finatic: broker execution time missing for deal ", (long)dealTicket,
+            "; live order.fill suppressed.");
+      return(false);
+     }
+   if(dealTimeSeconds <= 0)
+      dealTimeSeconds = dealTimeMillis / 1000;
+   executionTime = (datetime)dealTimeSeconds;
+   return(true);
+  }
+
 string finaticBuildTransactionEventJson(const MqlTradeTransaction& trans)
   {
    string login = IntegerToString((long)AccountInfoInteger(ACCOUNT_LOGIN));
    if(trans.type == TRADE_TRANSACTION_DEAL_ADD)
      {
+      datetime executionTime = 0;
+      if(!finaticMt5DealExecutionTime(trans.deal, executionTime))
+        {
+         // Broker execution evidence is unavailable: send no fill payload and
+         // never substitute a terminal or ingress clock. The history-replay
+         // path recovers the deal with its broker DEAL_TIME.
+         Print("Finatic: broker execution time unavailable for deal ", (long)trans.deal,
+               "; live order.fill suppressed (history replay recovers the deal).");
+         return("");
+        }
       string symbol = finaticJsonEscape(trans.symbol);
       return(
          "{\"event_type\":\"order.fill\",\"payload\":{\"deal_id\":\"" + IntegerToString((long)trans.deal) +
@@ -297,7 +361,8 @@ string finaticBuildTransactionEventJson(const MqlTradeTransaction& trans)
          "\",\"symbol\":\"" + symbol +
          "\",\"volume\":" + DoubleToString(trans.volume, 4) +
          ",\"price\":" + DoubleToString(trans.price, 5) +
-         ",\"side\":\"" + finaticMt5OrderSide((long)trans.order_type) +
+         ",\"side\":\"" + finaticMt5OrderSide((long)trans.order_type) + "\"" +
+         ",\"time\":\"" + TimeToString(executionTime, TIME_DATE|TIME_SECONDS) + "\"" +
          ",\"login\":\"" + login + "\"}}"
       );
      }

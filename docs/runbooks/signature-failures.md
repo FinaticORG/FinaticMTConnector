@@ -15,3 +15,7 @@
   Do not log the full signed body or customer payload merely to capture the
   version. Wrong-typed or nested lookalike recovery fields are ignored without
   retry.
+- Persistence rejection is not a signature failure. Background answers a
+  rejected persistence attempt with the stable connector-actionable code
+  `MT_INGESTION_PERSIST_REJECTED`. Correct the payload and retry; never treat
+  that answer as a successful ingest, and never weaken signing to satisfy it.

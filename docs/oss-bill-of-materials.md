@@ -22,6 +22,22 @@ functions already present in the EA sources. No additional third-party
 component or license is introduced. The fail-closed direct-member parser and
 sequence-ceiling guards are implemented in those native helpers as well.
 
+## Live fill execution-time evidence
+
+Live MT `order.fill` payloads carry the broker-native `time` field. MT5 reads
+it from the broker deal history selected by the transaction deal ticket
+(`HistorySelect`, `HistoryDealSelect`, `HistoryDealGetInteger` with
+`DEAL_TIME` / `DEAL_TIME_MSC`); MT4 reads the broker order open time
+(`OrderOpenTime()`). No synthetic or terminal-clock timestamp is ever sent.
+When the broker execution time is unavailable the EA sends no fill and the
+history-replay path recovers it with the broker timestamp. A rejected
+persistence attempt is answered by Background with the stable
+connector-actionable code `MT_INGESTION_PERSIST_REJECTED`, which the
+connector treats as retryable after correcting its payload and never as
+success. This change adds no component, package, network service, bundled
+source, or license obligation: it uses only native MQL history and order
+functions already present in the EA sources.
+
 ## Signed release provenance
 
 The `connector_version` ingress field is a constant release marker serialized
