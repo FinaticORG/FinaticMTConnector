@@ -16,3 +16,12 @@
   not reset it; reprovision the connector identity rather than reusing a value.
 - Do not log the connector secret, HMAC, full signed body, or customer payload
   when correlating release and rotation telemetry.
+- A rejected persistence attempt is answered by Background with the stable
+  connector-actionable code `MT_INGESTION_PERSIST_REJECTED`. It indicates a
+  payload or contract problem, not a credential problem: rotate nothing to
+  answer it. Correct the payload and retry, and never treat the rejection as
+  a successful ingest.
+- Live fill payloads carry the broker-native `time` field (MT5 broker deal
+  history `DEAL_TIME` / `DEAL_TIME_MSC`, MT4 broker order open time). It is
+  broker evidence, not a secret and not a terminal clock, and it never
+  changes because of a rotation.
